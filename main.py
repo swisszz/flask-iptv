@@ -4,8 +4,8 @@ import time
 
 app = Flask(__name__)
 
-PORTAL_URL = "http://pointpython.streamtv.to:8080/c"
-MAC = "00:1A:79:69:25:C5"
+PORTAL_URL = "http://globalgnet.live:80/c"
+MAC = "00:1A:79:73:36:F1"
 TOKEN_LIFETIME = 3600
 
 session = requests.Session()
@@ -70,6 +70,7 @@ def playlist():
 @app.route("/")
 def home():
     return "Server is running!"
+
 
 
 
