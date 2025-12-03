@@ -5,7 +5,7 @@ import time
 app = Flask(__name__)
 
 PORTAL_URL = "http://globalgnet.live:80/c"
-MAC = "00:1A:79:73:36:F1"
+MAC = "A0:BB:3E:15:BC:ED"
 TOKEN_LIFETIME = 3600
 
 session = requests.Session()
@@ -70,4 +70,5 @@ def playlist():
 @app.route("/")
 def home():
     return "Server is running!"
+
 
