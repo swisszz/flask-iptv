@@ -6,47 +6,58 @@ import os
 
 app = Flask(__name__)
 
-PORTAL_URL = "http://germanytv.net:8080/c"
-MAC = "00:1A:79:13:57:2F"
+# ถ้าอยากใช้หลาย portal ก็สามารถเพิ่มใน maclist.json ได้
+MACLIST_FILE = "maclist.json"  # ไฟล์ MAC และ URL
+
 TOKEN_LIFETIME = 3600
-MACLIST_FILE = "maclist.json"  # ไฟล์ MAC เพิ่มเติม
 
 session = requests.Session()
-headers = {
+session.headers.update({
     "User-Agent": "Mozilla/5.0",
     "X-User-Agent": "Model: MAG254; Link: WiFi",
     "X-User-Device": "MAG254",
-    "X-User-Device-Id": MAC,
-    "Cookie": f"mac={MAC}; stb_lang=en"
-}
-session.headers.update(headers)
+})
 
-token = None
-token_time = 0
+# เก็บ token ของแต่ละ MAC/URL
+tokens = {}
 
-def handshake():
-    global token, token_time
-    url = f"{PORTAL_URL}/server/load.php"
-    resp = session.get(url, params={"type": "stb", "action": "handshake"}, timeout=10)
+def handshake(portal_url, mac):
+    """ทำ handshake สำหรับ MAC และ portal ที่ระบุ"""
+    url = f"{portal_url}/server/load.php"
+    headers = {
+        "X-User-Device-Id": mac,
+        "Cookie": f"mac={mac}; stb_lang=en"
+    }
+    resp = requests.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
     data = resp.json()
     token = data.get("js", {}).get("token")
     if not token:
-        raise Exception("Handshake failed: no token")
-    session.headers["Authorization"] = f"Bearer {token}"
-    token_time = time.time()
+        raise Exception(f"Handshake failed for {mac} @ {portal_url}")
+    tokens[(portal_url, mac)] = {
+        "token": token,
+        "time": time.time(),
+        "headers": {
+            **headers,
+            "Authorization": f"Bearer {token}"
+        }
+    }
 
-def check_token():
-    if not token or (time.time() - token_time) > TOKEN_LIFETIME:
-        handshake()
+def check_token(portal_url, mac):
+    """เช็ค token ถ้าเก่าหรือไม่มีให้ handshake ใหม่"""
+    key = (portal_url, mac)
+    info = tokens.get(key)
+    if not info or (time.time() - info["time"]) > TOKEN_LIFETIME:
+        handshake(portal_url, mac)
+    return tokens[key]["headers"]
 
-def get_channels():
-    check_token()
-    url = f"{PORTAL_URL}/server/load.php"
-    resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, timeout=10)
+def get_channels(portal_url, mac):
+    """ดึง channels ของ MAC นั้น"""
+    headers = check_token(portal_url, mac)
+    url = f"{portal_url}/server/load.php"
+    resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
     data = resp.json()
     channels = data.get("js", {}).get("data", [])
-    
-    # แปลง channels ถ้าเป็น list ของ list
+    # ถ้า channels เป็น list ของ list แปลงเป็น dict
     fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
@@ -66,34 +77,33 @@ def get_stream_url(cmd):
 @app.route("/playlist.m3u")
 def playlist():
     try:
-        channels = get_channels()
+        all_channels = []
 
-        # โหลด MAC list เพิ่มเติมจากไฟล์
+        # โหลด MAC list จากไฟล์
         if os.path.exists(MACLIST_FILE):
             with open(MACLIST_FILE, "r") as f:
-                maclist = json.load(f)
+                maclist_data = json.load(f)
 
-            if isinstance(maclist, dict):
-                # maclist เป็น dict ของ portal_url -> list ของ MACs
-                for portal_url, macs in maclist.items():
-                    for idx, mac in enumerate(macs):
-                        name = f"User {idx+1}"
-                        url = f"{portal_url}?mac={mac}"
-                        channels.append({"name": name, "cmd": url})
+            for portal_url, macs in maclist_data.items():
+                for mac in macs:
+                    try:
+                        channels = get_channels(portal_url, mac)
+                        # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
+                        for ch in channels:
+                            name = ch.get("name", "NoName")
+                            url = get_stream_url(ch.get("cmd", ""))
+                            if url:
+                                all_channels.append({
+                                    "name": f"{name} ({mac})",
+                                    "cmd": url
+                                })
+                    except Exception as e:
+                        print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
 
-            elif isinstance(maclist, list):
-                # maclist เป็น list ของ MACs
-                for idx, mac in enumerate(maclist):
-                    name = f"User {idx+1}"
-                    url = f"{PORTAL_URL}?mac={mac}"
-                    channels.append({"name": name, "cmd": url})
-
+        # สร้าง M3U
         output = "#EXTM3U\n"
-        for ch in channels:
-            name = ch.get("name", "NoName")
-            url = get_stream_url(ch.get("cmd", ""))
-            if url:
-                output += f"#EXTINF:-1,{name}\n{url}\n"
+        for ch in all_channels:
+            output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
 
         return Response(output, mimetype="audio/x-mpegurl")
 
@@ -106,4 +116,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
