@@ -1,6 +1,8 @@
 from flask import Flask, Response
 import requests
 import time
+import random
+import os
 
 app = Flask(__name__)
 
@@ -20,7 +22,6 @@ MAC_LIST = [
     "00:1A:79:73:36:F1",
 ]
 
-
 portal_index = 0
 mac_index = 0
 
@@ -39,10 +40,8 @@ token = None
 token_time = 0
 TOKEN_LIFETIME = 3600
 
-
 def update_headers():
     mac = get_current_mac()
-
     session.headers.update({
         "User-Agent": "Mozilla/5.0",
         "X-User-Agent": "Model: MAG254; Link: WiFi",
@@ -50,7 +49,6 @@ def update_headers():
         "X-User-Device-Id": mac,
         "Cookie": f"mac={mac}; stb_lang=en"
     })
-
 
 update_headers()
 
@@ -63,13 +61,16 @@ def switch_portal():
     portal_index = (portal_index + 1) % len(PORTAL_LIST)
     print(f"[INFO] Switching portal → {get_current_portal()}")
 
-
 def switch_mac():
     global mac_index
-    mac_index = (mac_index + 1) % len(MAC_LIST)
+    # เลือก MAC ใหม่แบบ random ไม่ซ้ำกับปัจจุบัน (ถ้ามีมากกว่า 1 ตัว)
+    new_index = mac_index
+    while new_index == mac_index and len(MAC_LIST) > 1:
+        new_index = random.randint(0, len(MAC_LIST) - 1)
+    mac_index = new_index
+
     print(f"[INFO] Switching MAC → {get_current_mac()}")
     update_headers()
-
 
 # -------------------------------------------
 #            API COMMUNICATION
@@ -77,7 +78,6 @@ def switch_mac():
 
 def handshake():
     global token, token_time
-
     portal = get_current_portal()
 
     try:
@@ -97,15 +97,13 @@ def handshake():
 
     except Exception as e:
         print(f"[ERROR] Handshake failed: {e}")
-        switch_portal()      # เปลี่ยน portal
-        switch_mac()         # เปลี่ยน mac
-        return handshake()   # ลองใหม่อีกครั้ง
-
+        switch_portal()  # เปลี่ยน portal
+        switch_mac()     # Random MAC ใหม่
+        return handshake()  # ลองใหม่อีกครั้ง
 
 def check_token():
     if not token or (time.time() - token_time) > TOKEN_LIFETIME:
         handshake()
-
 
 def get_channels():
     check_token()
@@ -126,7 +124,6 @@ def get_channels():
         switch_mac()
         return get_channels()
 
-
 def get_stream_url(cmd):
     if not cmd:
         return None
@@ -134,7 +131,6 @@ def get_stream_url(cmd):
         if part.startswith("http"):
             return part
     return None
-
 
 # -------------------------------------------
 #               FLASK ROUTES
@@ -145,19 +141,14 @@ def playlist():
     try:
         channels = get_channels()
         output = "#EXTM3U\n"
-
         for ch in channels:
             name = ch.get("name", "NoName")
             url = get_stream_url(ch.get("cmd", ""))
-
             if url:
                 output += f"#EXTINF:-1,{name}\n{url}\n"
-
         return Response(output, mimetype="audio/x-mpegurl")
-
     except Exception as e:
         return Response(f"Error: {e}", mimetype="text/plain")
-
 
 @app.route("/")
 def home():
@@ -167,6 +158,10 @@ def home():
     Active MAC: {get_current_mac()}
     """
 
+# -------------------------------------------
+#            RUN FLASK (Render Friendly)
+# -------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
