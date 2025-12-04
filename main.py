@@ -1,67 +1,74 @@
 from flask import Flask, Response
 import requests
-import random
+import time
 
 app = Flask(__name__)
 
-PORTALS = [
-    "http://globalgnet.live:80/c",
-    "http://p1.eu58.xyz:8080/c",
-    "http://p2.eu58.xyz:8080/c"
-]
+PORTAL_URL = "http://p1.eu58.xyz:8080/c"
+MAC = "00:1A:79:7C:6A:40"
+TOKEN_LIFETIME = 3600
 
-MACS = [
-    "00:1A:79:12:34:56",
-    "00:1A:79:73:36:F1",
-    "00:1A:79:7C:6A:40"
-]
-
-MAX_RETRIES = 3  # retry limit ต่อ portal
 session = requests.Session()
+headers = {
+    "User-Agent": "Mozilla/5.0",
+    "X-User-Agent": "Model: MAG254; Link: WiFi",
+    "X-User-Device": "MAG254",
+    "X-User-Device-Id": MAC,
+    "Cookie": f"mac={MAC}; stb_lang=en"
+}
+session.headers.update(headers)
+
+token = None
+token_time = 0
+
+def handshake():
+    global token, token_time
+    url = f"{PORTAL_URL}/server/load.php"
+    resp = session.get(url, params={"type": "stb", "action": "handshake"}, timeout=10)
+    data = resp.json()
+    token = data.get("js", {}).get("token")
+    if not token:
+        raise Exception("Handshake failed: no token")
+    session.headers["Authorization"] = f"Bearer {token}"
+    token_time = time.time()
+
+def check_token():
+    if not token or (time.time() - token_time) > TOKEN_LIFETIME:
+        handshake()
 
 def get_channels():
-    for portal in PORTALS:
-        for attempt in range(MAX_RETRIES):
-            mac = random.choice(MACS)
-            try:
-                resp = session.get(
-                    f"{portal}/server/load.php",
-                    params={"type": "itv", "action": "get_all_channels"},
-                    timeout=10
-                )
-                data = resp.json()
-                
-                # เช็คว่า JSON เป็น dict หรือไม่
-                if isinstance(data, dict):
-                    js_data = data.get("js", {})
-                    channels = js_data.get("data", [])
-                    if channels:
-                        print(f"[INFO] Got {len(channels)} channels from {portal}")
-                        return channels
-                    else:
-                        print(f"[WARN] Empty channel list from {portal}")
-                else:
-                    print(f"[WARN] Invalid JSON format from {portal}: not a dict")
-            except requests.exceptions.RequestException as e:
-                print(f"[ERROR] get_channels failed for {portal} attempt {attempt+1}: {e}")
-            except ValueError as e:
-                print(f"[ERROR] JSON decode failed for {portal} attempt {attempt+1}: {e}")
-    print("[ERROR] All portals failed or returned no channels")
-    return []
+    check_token()
+    url = f"{PORTAL_URL}/server/load.php"
+    resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, timeout=10)
+    data = resp.json()
+    return data.get("js", {}).get("data", [])
 
-def build_m3u(channels):
-    m3u = "#EXTM3U\n"
-    for ch in channels:
-        name = ch.get("name", "NoName")
-        url = ch.get("url", "")
-        m3u += f"#EXTINF:-1,{name}\n{url}\n"
-    return m3u
+def get_stream_url(cmd):
+    if not cmd:
+        return None
+    for part in cmd.split():
+        if part.startswith("http"):
+            return part
+    return None
 
 @app.route("/playlist.m3u")
 def playlist():
-    channels = get_channels()
-    m3u_content = build_m3u(channels)
-    return Response(m3u_content, mimetype="application/x-mpegURL")
+    try:
+        channels = get_channels()
+        output = "#EXTM3U\n"
+        for ch in channels:
+            name = ch.get("name", "NoName")
+            url = get_stream_url(ch.get("cmd", ""))
+            if url:
+                output += f"#EXTINF:-1,{name}\n{url}\n"
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+        return Response(output, mimetype="audio/x-mpegurl")
+
+    except Exception as e:
+        return Response(f"Error: {e}", mimetype="text/plain")
+
+@app.route("/")
+def home():
+    return "Server is running!"
+
+
