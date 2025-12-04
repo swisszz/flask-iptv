@@ -6,8 +6,8 @@ import os
 
 app = Flask(__name__)
 
-PORTAL_URL = "http://globalgnet.live:80/c"
-MAC = "00:1A:79:73:36:F1"
+PORTAL_URL = "http://germanytv.net:8080/c"
+MAC = "00:1A:79:13:57:2F"
 TOKEN_LIFETIME = 3600
 MACLIST_FILE = "maclist.json"  # ไฟล์ MAC เพิ่มเติม
 
@@ -106,3 +106,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
