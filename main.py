@@ -6,11 +6,13 @@ import os
 
 app = Flask(__name__)
 
+# ====== ตั้งค่าพื้นฐาน ======
 PORTAL_URL = "http://p1.eu58.xyz:8080/c"
 MAC = "00:1A:79:7C:6A:40"
 TOKEN_LIFETIME = 3600
 MACLIST_FILE = "maclist.json"  # ไฟล์ MAC เพิ่มเติม
 
+# ====== สร้าง session และ headers ======
 session = requests.Session()
 headers = {
     "User-Agent": "Mozilla/5.0",
@@ -24,6 +26,7 @@ session.headers.update(headers)
 token = None
 token_time = 0
 
+# ====== ฟังก์ชัน handshake ======
 def handshake():
     global token, token_time
     url = f"{PORTAL_URL}/server/load.php"
@@ -35,10 +38,12 @@ def handshake():
     session.headers["Authorization"] = f"Bearer {token}"
     token_time = time.time()
 
+# ====== ตรวจสอบ token ======
 def check_token():
     if not token or (time.time() - token_time) > TOKEN_LIFETIME:
         handshake()
 
+# ====== ดึงรายการช่องจาก Portal ======
 def get_channels():
     check_token()
     url = f"{PORTAL_URL}/server/load.php"
@@ -46,7 +51,7 @@ def get_channels():
     data = resp.json()
     channels = data.get("js", {}).get("data", [])
 
-    # ถ้า channels เป็น list ของ list ให้แปลงเป็น dict
+    # แปลง list ของ list เป็น dict ถ้าจำเป็น
     fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
@@ -55,6 +60,7 @@ def get_channels():
             fixed_channels.append({"name": ch[0], "cmd": ch[1]})
     return fixed_channels
 
+# ====== ดึง URL จาก cmd ======
 def get_stream_url(cmd):
     if not cmd:
         return None
@@ -63,6 +69,7 @@ def get_stream_url(cmd):
             return part
     return None
 
+# ====== สร้าง playlist.m3u ======
 @app.route("/playlist.m3u")
 def playlist():
     try:
@@ -72,13 +79,13 @@ def playlist():
         if os.path.exists(MACLIST_FILE):
             with open(MACLIST_FILE, "r") as f:
                 maclist = json.load(f)
-            for item in maclist:
-                if isinstance(item, dict):
-                    name = item.get("name", "NoName")
-                    url = get_stream_url(item.get("cmd", ""))
-                    if url:
-                        channels.append({"name": name, "cmd": url})
+            for portal_url, macs in maclist.items():
+                for idx, mac in enumerate(macs):
+                    name = f"User {idx+1}"
+                    url = f"{portal_url}?mac={mac}"
+                    channels.append({"name": name, "cmd": url})
 
+        # สร้าง output M3U
         output = "#EXTM3U\n"
         for ch in channels:
             name = ch.get("name", "NoName")
@@ -91,9 +98,11 @@ def playlist():
     except Exception as e:
         return Response(f"Error: {e}", mimetype="text/plain")
 
+# ====== หน้า home ======
 @app.route("/")
 def home():
     return "Server is running!"
 
+# ====== run Flask ======
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
