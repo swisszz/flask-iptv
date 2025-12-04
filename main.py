@@ -2,13 +2,8 @@ from flask import Flask, Response
 import requests
 import time
 import random
-import os
 
 app = Flask(__name__)
-
-# -------------------------------------------
-#       MULTI PORTAL + MULTI MAC SUPPORT
-# -------------------------------------------
 
 PORTAL_LIST = [
     "http://p1.eu58.xyz:8080/c",
@@ -31,17 +26,14 @@ def get_current_portal():
 def get_current_mac():
     return MAC_LIST[mac_index]
 
-# -------------------------------------------
-#               SESSION SETUP
-# -------------------------------------------
-
 session = requests.Session()
 token = None
 token_time = 0
 TOKEN_LIFETIME = 3600
 
-def update_headers():
-    mac = get_current_mac()
+def update_headers(mac=None):
+    if mac is None:
+        mac = get_current_mac()
     session.headers.update({
         "User-Agent": "Mozilla/5.0",
         "X-User-Agent": "Model: MAG254; Link: WiFi",
@@ -52,34 +44,23 @@ def update_headers():
 
 update_headers()
 
-# -------------------------------------------
-#              FAILOVER LOGIC
-# -------------------------------------------
-
 def switch_portal():
     global portal_index
     portal_index = (portal_index + 1) % len(PORTAL_LIST)
     print(f"[INFO] Switching portal → {get_current_portal()}")
 
-def switch_mac():
+def switch_mac(randomize=False):
     global mac_index
-    # เลือก MAC ใหม่แบบ random ไม่ซ้ำกับปัจจุบัน (ถ้ามีมากกว่า 1 ตัว)
-    new_index = mac_index
-    while new_index == mac_index and len(MAC_LIST) > 1:
-        new_index = random.randint(0, len(MAC_LIST) - 1)
-    mac_index = new_index
-
+    if randomize:
+        mac_index = random.randint(0, len(MAC_LIST) - 1)
+    else:
+        mac_index = (mac_index + 1) % len(MAC_LIST)
     print(f"[INFO] Switching MAC → {get_current_mac()}")
     update_headers()
-
-# -------------------------------------------
-#            API COMMUNICATION
-# -------------------------------------------
 
 def handshake():
     global token, token_time
     portal = get_current_portal()
-
     try:
         resp = session.get(
             f"{portal}/server/load.php",
@@ -88,18 +69,18 @@ def handshake():
         )
         data = resp.json()
         token = data.get("js", {}).get("token")
-
         if not token:
             raise Exception("No token returned")
 
         session.headers["Authorization"] = f"Bearer {token}"
         token_time = time.time()
+        print(f"[INFO] Handshake successful. Token set.")
 
     except Exception as e:
         print(f"[ERROR] Handshake failed: {e}")
-        switch_portal()  # เปลี่ยน portal
-        switch_mac()     # Random MAC ใหม่
-        return handshake()  # ลองใหม่อีกครั้ง
+        switch_portal()
+        switch_mac(randomize=True)
+        return handshake()
 
 def check_token():
     if not token or (time.time() - token_time) > TOKEN_LIFETIME:
@@ -108,7 +89,6 @@ def check_token():
 def get_channels():
     check_token()
     portal = get_current_portal()
-
     try:
         resp = session.get(
             f"{portal}/server/load.php",
@@ -116,12 +96,13 @@ def get_channels():
             timeout=10
         )
         data = resp.json()
-        return data.get("js", {}).get("data", [])
+        js_data = data.get("js", {}) if isinstance(data, dict) else {}
+        return js_data.get("data", [])
 
     except Exception as e:
         print(f"[ERROR] get_channels failed: {e}")
         switch_portal()
-        switch_mac()
+        switch_mac(randomize=True)
         return get_channels()
 
 def get_stream_url(cmd):
@@ -131,10 +112,6 @@ def get_stream_url(cmd):
         if part.startswith("http"):
             return part
     return None
-
-# -------------------------------------------
-#               FLASK ROUTES
-# -------------------------------------------
 
 @app.route("/playlist.m3u")
 def playlist():
@@ -158,10 +135,14 @@ def home():
     Active MAC: {get_current_mac()}
     """
 
-# -------------------------------------------
-#            RUN FLASK (Render Friendly)
-# -------------------------------------------
+@app.route("/test")
+def test():
+    try:
+        handshake()
+        channels = get_channels()
+        return {"token": token, "channels_count": len(channels)}
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
