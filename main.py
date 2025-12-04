@@ -1,12 +1,15 @@
 from flask import Flask, Response
 import requests
 import time
+import json
+import os
 
 app = Flask(__name__)
 
 PORTAL_URL = "http://p1.eu58.xyz:8080/c"
 MAC = "00:1A:79:7C:6A:40"
 TOKEN_LIFETIME = 3600
+MACLIST_FILE = "maclist.json"  # ไฟล์ MAC เพิ่มเติม
 
 session = requests.Session()
 headers = {
@@ -41,7 +44,16 @@ def get_channels():
     url = f"{PORTAL_URL}/server/load.php"
     resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, timeout=10)
     data = resp.json()
-    return data.get("js", {}).get("data", [])
+    channels = data.get("js", {}).get("data", [])
+
+    # ถ้า channels เป็น list ของ list ให้แปลงเป็น dict
+    fixed_channels = []
+    for ch in channels:
+        if isinstance(ch, dict):
+            fixed_channels.append(ch)
+        elif isinstance(ch, list) and len(ch) >= 2:
+            fixed_channels.append({"name": ch[0], "cmd": ch[1]})
+    return fixed_channels
 
 def get_stream_url(cmd):
     if not cmd:
@@ -55,6 +67,18 @@ def get_stream_url(cmd):
 def playlist():
     try:
         channels = get_channels()
+
+        # โหลด MAC list เพิ่มเติมจากไฟล์
+        if os.path.exists(MACLIST_FILE):
+            with open(MACLIST_FILE, "r") as f:
+                maclist = json.load(f)
+            for item in maclist:
+                if isinstance(item, dict):
+                    name = item.get("name", "NoName")
+                    url = get_stream_url(item.get("cmd", ""))
+                    if url:
+                        channels.append({"name": name, "cmd": url})
+
         output = "#EXTM3U\n"
         for ch in channels:
             name = ch.get("name", "NoName")
@@ -71,4 +95,5 @@ def playlist():
 def home():
     return "Server is running!"
 
-
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
