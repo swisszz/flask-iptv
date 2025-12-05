@@ -29,10 +29,16 @@ def handshake(portal_url, mac):
         "Cookie": f"mac={mac}; stb_lang=en"
     }
     resp = requests.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
-    data = resp.json()
+    
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise Exception(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
+    
     token = data.get("js", {}).get("token")
     if not token:
         raise Exception(f"Handshake failed for {mac} @ {portal_url}")
+    
     tokens[(portal_url, mac)] = {
         "token": token,
         "time": time.time(),
@@ -55,8 +61,19 @@ def get_channels(portal_url, mac):
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
     resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
-    data = resp.json()
-    channels = data.get("js", {}).get("data", [])
+    
+    try:
+        data = resp.json()
+    except ValueError as e:
+        print(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
+        return []
+
+    # ตรวจสอบโครงสร้างของข้อมูลที่ได้รับ
+    if 'js' in data and isinstance(data['js'], dict) and 'data' in data['js']:
+        channels = data['js']['data']
+    else:
+        print("Invalid response format, expected 'js' -> 'data' structure")
+        return []
     
     # ถ้า channels เป็น list ของ list แปลงเป็น dict
     fixed_channels = []
@@ -114,7 +131,8 @@ def playlist():
         output = "#EXTM3U\n"
         for ch in all_channels:
             output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
-            if ch["icon"]:
+            # ตรวจสอบว่า icon URL มีค่า
+            if ch["icon"] and ch["icon"] != "":
                 output += f"#EXTART:{ch['icon']}\n"  # เพิ่มไอคอนใน M3U
 
         return Response(output, mimetype="audio/x-mpegurl")
