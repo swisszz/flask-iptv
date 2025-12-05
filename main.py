@@ -29,10 +29,19 @@ def handshake(portal_url, mac):
         "Cookie": f"mac={mac}; stb_lang=en"
     }
     resp = requests.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
-    data = resp.json()
+
+    if resp.status_code != 200:
+        raise Exception(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
+
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise Exception(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
+
     token = data.get("js", {}).get("token")
     if not token:
         raise Exception(f"Handshake failed for {mac} @ {portal_url}")
+    
     tokens[(portal_url, mac)] = {
         "token": token,
         "time": time.time(),
@@ -55,8 +64,19 @@ def get_channels(portal_url, mac):
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
     resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
-    data = resp.json()
+
+    if resp.status_code != 200:
+        print(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
+        return []
+
+    try:
+        data = resp.json()
+    except ValueError as e:
+        print(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
+        return []
+
     channels = data.get("js", {}).get("data", [])
+    
     # ถ้า channels เป็น list ของ list แปลงเป็น dict
     fixed_channels = []
     for ch in channels:
@@ -64,6 +84,9 @@ def get_channels(portal_url, mac):
             fixed_channels.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             fixed_channels.append({"name": ch[0], "cmd": ch[1]})
+        else:
+            print(f"Unexpected channel format: {ch}")
+
     return fixed_channels
 
 def get_stream_url(cmd):
@@ -80,25 +103,27 @@ def playlist():
         all_channels = []
 
         # โหลด MAC list จากไฟล์
-        if os.path.exists(MACLIST_FILE):
-            with open(MACLIST_FILE, "r") as f:
-                maclist_data = json.load(f)
+        if not os.path.exists(MACLIST_FILE):
+            return Response(f"Error: {MACLIST_FILE} does not exist!", mimetype="text/plain")
+        
+        with open(MACLIST_FILE, "r") as f:
+            maclist_data = json.load(f)
 
-            for portal_url, macs in maclist_data.items():
-                for mac in macs:
-                    try:
-                        channels = get_channels(portal_url, mac)
-                        # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
-                        for ch in channels:
-                            name = ch.get("name", "NoName")
-                            url = get_stream_url(ch.get("cmd", ""))
-                            if url:
-                                all_channels.append({
-                                    "name": f"{name} ({mac})",
-                                    "cmd": url
-                                })
-                    except Exception as e:
-                        print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
+        for portal_url, macs in maclist_data.items():
+            for mac in macs:
+                try:
+                    channels = get_channels(portal_url, mac)
+                    # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
+                    for ch in channels:
+                        name = ch.get("name", "NoName")
+                        url = get_stream_url(ch.get("cmd", ""))
+                        if url:
+                            all_channels.append({
+                                "name": f"{name} ({mac})",
+                                "cmd": url
+                            })
+                except Exception as e:
+                    print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
 
         # สร้าง M3U
         output = "#EXTM3U\n"
