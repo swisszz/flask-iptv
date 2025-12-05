@@ -1,8 +1,8 @@
-from flask import Flask, Response
+import os
+import json
 import requests
 import time
-import json
-import os
+from flask import Flask, Response
 
 app = Flask(__name__)
 
@@ -57,6 +57,7 @@ def get_channels(portal_url, mac):
     resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
     data = resp.json()
     channels = data.get("js", {}).get("data", [])
+    
     # ถ้า channels เป็น list ของ list แปลงเป็น dict
     fixed_channels = []
     for ch in channels:
@@ -64,6 +65,12 @@ def get_channels(portal_url, mac):
             fixed_channels.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             fixed_channels.append({"name": ch[0], "cmd": ch[1]})
+    
+    # การสร้าง URL สำหรับไอคอนอัตโนมัติจากชื่อช่อง
+    for ch in fixed_channels:
+        channel_name = ch.get("name", "").lower().replace(" ", "_")
+        ch["icon_url"] = f"http://example.com/icons/{channel_name}.png"  # กำหนดไอคอนจากชื่อช่อง
+    
     return fixed_channels
 
 def get_stream_url(cmd):
@@ -85,17 +92,20 @@ def playlist():
                 maclist_data = json.load(f)
 
             for portal_url, macs in maclist_data.items():
-                for mac in macs:
+                for mac_entry in macs:
+                    mac = mac_entry["mac"]
                     try:
                         channels = get_channels(portal_url, mac)
                         # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
                         for ch in channels:
                             name = ch.get("name", "NoName")
                             url = get_stream_url(ch.get("cmd", ""))
+                            icon = ch.get("icon_url", "")  # ดึง URL ไอคอน
                             if url:
                                 all_channels.append({
                                     "name": f"{name} ({mac})",
-                                    "cmd": url
+                                    "cmd": url,
+                                    "icon": icon  # เพิ่มไอคอนลงไปในผลลัพธ์
                                 })
                     except Exception as e:
                         print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
@@ -104,6 +114,8 @@ def playlist():
         output = "#EXTM3U\n"
         for ch in all_channels:
             output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
+            if ch["icon"]:
+                output += f"#EXTART:{ch['icon']}\n"  # เพิ่มไอคอนใน M3U
 
         return Response(output, mimetype="audio/x-mpegurl")
 
