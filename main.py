@@ -1,8 +1,8 @@
-import os
-import json
+from flask import Flask, Response
 import requests
 import time
-from flask import Flask, Response
+import json
+import os
 
 app = Flask(__name__)
 
@@ -29,16 +29,10 @@ def handshake(portal_url, mac):
         "Cookie": f"mac={mac}; stb_lang=en"
     }
     resp = requests.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
-    
-    try:
-        data = resp.json()
-    except ValueError as e:
-        raise Exception(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
-    
+    data = resp.json()
     token = data.get("js", {}).get("token")
     if not token:
         raise Exception(f"Handshake failed for {mac} @ {portal_url}")
-    
     tokens[(portal_url, mac)] = {
         "token": token,
         "time": time.time(),
@@ -61,20 +55,8 @@ def get_channels(portal_url, mac):
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
     resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
-    
-    try:
-        data = resp.json()
-    except ValueError as e:
-        print(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
-        return []
-
-    # ตรวจสอบโครงสร้างของข้อมูลที่ได้รับ
-    if 'js' in data and isinstance(data['js'], dict) and 'data' in data['js']:
-        channels = data['js']['data']
-    else:
-        print("Invalid response format, expected 'js' -> 'data' structure")
-        return []
-    
+    data = resp.json()
+    channels = data.get("js", {}).get("data", [])
     # ถ้า channels เป็น list ของ list แปลงเป็น dict
     fixed_channels = []
     for ch in channels:
@@ -82,12 +64,6 @@ def get_channels(portal_url, mac):
             fixed_channels.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             fixed_channels.append({"name": ch[0], "cmd": ch[1]})
-    
-    # การสร้าง URL สำหรับไอคอนอัตโนมัติจากชื่อช่อง
-    for ch in fixed_channels:
-        channel_name = ch.get("name", "").lower().replace(" ", "_")
-        ch["icon_url"] = f"http://example.com/icons/{channel_name}.png"  # กำหนดไอคอนจากชื่อช่อง
-    
     return fixed_channels
 
 def get_stream_url(cmd):
@@ -109,20 +85,17 @@ def playlist():
                 maclist_data = json.load(f)
 
             for portal_url, macs in maclist_data.items():
-                for mac_entry in macs:
-                    mac = mac_entry["mac"]
+                for mac in macs:
                     try:
                         channels = get_channels(portal_url, mac)
                         # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
                         for ch in channels:
                             name = ch.get("name", "NoName")
                             url = get_stream_url(ch.get("cmd", ""))
-                            icon = ch.get("icon_url", "")  # ดึง URL ไอคอน
                             if url:
                                 all_channels.append({
                                     "name": f"{name} ({mac})",
-                                    "cmd": url,
-                                    "icon": icon  # เพิ่มไอคอนลงไปในผลลัพธ์
+                                    "cmd": url
                                 })
                     except Exception as e:
                         print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
@@ -131,9 +104,6 @@ def playlist():
         output = "#EXTM3U\n"
         for ch in all_channels:
             output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
-            # ตรวจสอบว่า icon URL มีค่า
-            if ch["icon"] and ch["icon"] != "":
-                output += f"#EXTART:{ch['icon']}\n"  # เพิ่มไอคอนใน M3U
 
         return Response(output, mimetype="audio/x-mpegurl")
 
