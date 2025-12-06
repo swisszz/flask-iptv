@@ -203,6 +203,13 @@ def epg_xml():
     for portal_url, macs in maclist.items():
         for mac in macs:
             epg_data = get_epg_for_portal(portal_url, mac)
+            channels = get_channels(portal_url, mac)
+
+            channel_logos = {}
+            for ch in channels:
+                ch_id = ch.get("cmd", ch.get("name", "unknown"))
+                logo = ch.get("logo", "")
+                channel_logos[ch_id] = logo
 
             # รองรับ dict หรือ list
             if isinstance(epg_data, dict):
@@ -212,6 +219,9 @@ def epg_xml():
                         ch_elem = ET.SubElement(tv, "channel", id=ch_id)
                         name_elem = ET.SubElement(ch_elem, "display-name")
                         name_elem.text = ch_id
+                        logo_url = channel_logos.get(ch_id)
+                        if logo_url:
+                            icon_elem = ET.SubElement(ch_elem, "icon", src=logo_url)
 
                     for ep in items:
                         try:
@@ -236,6 +246,9 @@ def epg_xml():
                         ch_elem = ET.SubElement(tv, "channel", id=ch_id)
                         name_elem = ET.SubElement(ch_elem, "display-name")
                         name_elem.text = ch_id
+                        logo_url = channel_logos.get(ch_id)
+                        if logo_url:
+                            icon_elem = ET.SubElement(ch_elem, "icon", src=logo_url)
 
                     try:
                         start = datetime.datetime.fromtimestamp(int(ep.get("start", 0)))
@@ -257,7 +270,7 @@ def epg_xml():
 
 @app.route("/")
 def home():
-    return "MAC Portal IPTV Server (Playlist + EPG XMLTV) is running!"
+    return "MAC Portal IPTV Server (Playlist + EPG XMLTV + Logo) is running!"
 
 
 if __name__ == "__main__":
