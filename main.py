@@ -6,7 +6,7 @@ import os
 
 app = Flask(__name__)
 
-# ถ้าอยากใช้หลาย portal ก็สามารถเพิ่มใน maclist.json ได้
+# swisszz
 MACLIST_FILE = "maclist.json"  # ไฟล์ MAC และ URL
 
 TOKEN_LIFETIME = 3600
@@ -141,3 +141,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
