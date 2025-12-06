@@ -41,16 +41,12 @@ def build_headers(mac, token=None):
 
 def parse_token(data):
     js = data.get("js", {})
-
     if "token" in js and isinstance(js["token"], str):
         return js["token"]
-
     if isinstance(js.get("token"), dict):
         return js["token"].get("token")
-
     if isinstance(js.get("data"), dict):
         return js["data"].get("token")
-
     return None
 
 
@@ -60,45 +56,32 @@ def parse_token(data):
 
 def handshake(portal_url, mac):
     url = f"{portal_url}/server/load.php"
-
-    params = {
-        "type": "stb",
-        "action": "handshake",
-        "token": "",
-        "prehash": "0"
-    }
-
+    params = {"type": "stb", "action": "handshake", "token": "", "prehash": "0"}
     headers = build_headers(mac)
 
     resp = session.get(url, params=params, headers=headers, timeout=10)
-
     if resp.status_code != 200:
         raise Exception(f"Handshake failed {mac} @ {portal_url} | HTTP {resp.status_code}")
 
     data = resp.json()
     token = parse_token(data)
-
     if not token:
         raise Exception(f"No token returned from portal for {mac} @ {portal_url}")
 
-    tokens[(portal_url, mac)] = {
-        "token": token,
-        "time": time.time()
-    }
-
+    tokens[(portal_url, mac)] = {"token": token, "time": time.time()}
+    print(f"[INFO] Handshake success: {mac} @ {portal_url}")
     return token
 
 
 def check_token(portal_url, mac):
     key = (portal_url, mac)
     info = tokens.get(key)
-
     if not info or (time.time() - info["time"]) > TOKEN_LIFETIME:
         token = handshake(portal_url, mac)
     else:
         token = info["token"]
-
     return build_headers(mac, token)
+
 
 # ============================================================================================
 # Get Channels
@@ -107,23 +90,15 @@ def check_token(portal_url, mac):
 def get_channels(portal_url, mac):
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
-
-    payload = {
-        "type": "itv",
-        "action": "get_all_channels"
-    }
-
-    resp = session.post(url, data=payload, headers=headers, timeout=10)
-
-    if resp.status_code != 200:
-        return []
+    payload = {"type": "itv", "action": "get_all_channels"}
 
     try:
+        resp = session.post(url, data=payload, headers=headers, timeout=10)
         data = resp.json()
-    except:
+        channels = data.get("js", {}).get("data", [])
+    except Exception as e:
+        print(f"[ERROR] get_channels {mac} @ {portal_url}: {e}")
         return []
-
-    channels = data.get("js", {}).get("data", [])
 
     fixed = []
     for ch in channels:
@@ -131,7 +106,6 @@ def get_channels(portal_url, mac):
             fixed.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             fixed.append({"name": ch[0], "cmd": ch[1]})
-
     return fixed
 
 
@@ -145,32 +119,36 @@ def get_stream_url(cmd):
 
 
 # ============================================================================================
-# Get EPG
+# Get EPG (Auto Detect)
 # ============================================================================================
 
 def get_epg_for_portal(portal_url, mac, hours=36):
-    """ดึง EPG ของ portal นี้"""
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
 
     now = int(time.time())
-    after = now + (hours * 3600)
+    after = now + hours * 3600
 
-    payload = {
-        "type": "itv",
-        "action": "get_epg_info",
-        "period": f"{now}-{after}"
-    }
+    epg_actions = [
+        {"type": "itv", "action": "get_epg_info", "period": f"{now}-{after}"},
+        {"type": "itv", "action": "get_short_epg"},
+        {"type": "itv", "action": "get_simple_data_table"},
+        {"type": "itv", "action": "get_epg"}
+    ]
 
-    resp = session.post(url, data=payload, headers=headers, timeout=10)
+    for payload in epg_actions:
+        try:
+            resp = session.post(url, data=payload, headers=headers, timeout=10)
+            data = resp.json()
+            epg = data.get("js", {}).get("data", {})
+            if epg:
+                print(f"[INFO] Using EPG action: {payload['action']} for {mac} @ {portal_url}")
+                return epg
+        except Exception as e:
+            print(f"[WARN] EPG error {payload['action']} for {mac} @ {portal_url}: {e}")
 
-    try:
-        data = resp.json()
-    except:
-        return {}
-
-    epg = data.get("js", {}).get("data", {})
-    return epg
+    print(f"[WARN] NO EPG found for {mac} @ {portal_url}")
+    return {}
 
 
 # ============================================================================================
@@ -192,18 +170,13 @@ def playlist():
             for mac in macs:
                 try:
                     channels = get_channels(portal_url, mac)
-
                     for ch in channels:
                         url = get_stream_url(ch.get("cmd", ""))
-
                         if url:
                             name = ch.get("name", "Unknown")
-                            all_channels.append({
-                                "name": f"{name} ({mac})",
-                                "url": url
-                            })
+                            all_channels.append({"name": f"{name} ({mac})", "url": url})
                 except Exception as e:
-                    print(f"Error: {e}")
+                    print(f"[ERROR] Fetch channels: {e}")
 
         output = "#EXTM3U\n"
         for ch in all_channels:
@@ -212,12 +185,8 @@ def playlist():
         return Response(output, mimetype="audio/x-mpegurl")
 
     except Exception as e:
-        return Response(f"Error: {e}", mimetype="text/plain")
+        return Response(f"[ERROR] {e}", mimetype="text/plain")
 
-
-# ============================================================================================
-# EPG XMLTV OUTPUT
-# ============================================================================================
 
 @app.route("/epg.xml")
 def epg_xml():
@@ -227,49 +196,62 @@ def epg_xml():
     with open(MACLIST_FILE, "r") as f:
         maclist = json.load(f)
 
-    # XMLTV root
     tv = ET.Element("tv")
     tv.set("source-info-name", "MAC Portal Server")
-
     channel_ids = set()
 
-    # Combine all portal EPGs
     for portal_url, macs in maclist.items():
         for mac in macs:
             epg_data = get_epg_for_portal(portal_url, mac)
 
-            for ch_id, items in epg_data.items():
-                # add channel if not added
-                if ch_id not in channel_ids:
-                    channel_ids.add(ch_id)
+            # รองรับ dict หรือ list
+            if isinstance(epg_data, dict):
+                for ch_id, items in epg_data.items():
+                    if ch_id not in channel_ids:
+                        channel_ids.add(ch_id)
+                        ch_elem = ET.SubElement(tv, "channel", id=ch_id)
+                        name_elem = ET.SubElement(ch_elem, "display-name")
+                        name_elem.text = ch_id
 
-                    ch_elem = ET.SubElement(tv, "channel")
-                    ch_elem.set("id", ch_id)
+                    for ep in items:
+                        try:
+                            start = datetime.datetime.fromtimestamp(int(ep.get("start", 0)))
+                            end = datetime.datetime.fromtimestamp(int(ep.get("end", 0)))
+                            start_str = start.strftime("%Y%m%d%H%M%S +0000")
+                            end_str = end.strftime("%Y%m%d%H%M%S +0000")
 
-                    name = ET.SubElement(ch_elem, "display-name")
-                    name.text = ch_id
+                            prog = ET.SubElement(tv, "programme", start=start_str, stop=end_str, channel=ch_id)
+                            title = ET.SubElement(prog, "title")
+                            title.text = ep.get("name", "No Title")
+                            desc = ET.SubElement(prog, "desc")
+                            desc.text = ep.get("descr", "")
+                        except Exception as e:
+                            print(f"[WARN] EPG parse error: {e}")
 
-                # programme
-                for ep in items:
-                    start = datetime.datetime.fromtimestamp(int(ep["start"]))
-                    end = datetime.datetime.fromtimestamp(int(ep["end"]))
+            elif isinstance(epg_data, list):
+                for ep in epg_data:
+                    ch_id = ep.get("id", "unknown")
+                    if ch_id not in channel_ids:
+                        channel_ids.add(ch_id)
+                        ch_elem = ET.SubElement(tv, "channel", id=ch_id)
+                        name_elem = ET.SubElement(ch_elem, "display-name")
+                        name_elem.text = ch_id
 
-                    start_str = start.strftime("%Y%m%d%H%M%S +0000")
-                    end_str = end.strftime("%Y%m%d%H%M%S +0000")
+                    try:
+                        start = datetime.datetime.fromtimestamp(int(ep.get("start", 0)))
+                        end = datetime.datetime.fromtimestamp(int(ep.get("end", 0)))
+                        start_str = start.strftime("%Y%m%d%H%M%S +0000")
+                        end_str = end.strftime("%Y%m%d%H%M%S +0000")
 
-                    prog = ET.SubElement(tv, "programme")
-                    prog.set("start", start_str)
-                    prog.set("stop", end_str)
-                    prog.set("channel", ch_id)
-
-                    title = ET.SubElement(prog, "title")
-                    title.text = ep.get("name", "No Title")
-
-                    desc = ET.SubElement(prog, "desc")
-                    desc.text = ep.get("descr", "")
+                        prog = ET.SubElement(tv, "programme", start=start_str, stop=end_str, channel=ch_id)
+                        title = ET.SubElement(prog, "title")
+                        title.text = ep.get("name", "No Title")
+                        desc = ET.SubElement(prog, "desc")
+                        desc.text = ep.get("descr", "")
+                    except Exception as e:
+                        print(f"[WARN] EPG parse error: {e}")
 
     xml_data = ET.tostring(tv, encoding="utf-8", method="xml")
-
     return Response(xml_data, mimetype="application/xml")
 
 
