@@ -60,7 +60,7 @@ def check_token(portal_url, mac):
     return tokens[key]["headers"]
 
 def get_channels(portal_url, mac):
-    """ดึง channels ของ MAC นั้น"""
+    """ดึง channels ของ MAC นั้น และกรองเฉพาะ live TV (รายการทีวี)"""
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
     resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
@@ -81,9 +81,13 @@ def get_channels(portal_url, mac):
     fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
-            fixed_channels.append(ch)
+            # กรองเฉพาะช่องรายการทีวีที่ไม่ได้เป็นหนัง
+            if 'tv' in ch.get("category", "").lower() or 'live' in ch.get("type", "").lower():
+                fixed_channels.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
-            fixed_channels.append({"name": ch[0], "cmd": ch[1]})
+            ch_dict = {"name": ch[0], "cmd": ch[1]}
+            if 'tv' in ch_dict.get("category", "").lower() or 'live' in ch_dict.get("type", "").lower():
+                fixed_channels.append(ch_dict)
         else:
             print(f"Unexpected channel format: {ch}")
 
@@ -109,11 +113,19 @@ def playlist():
         with open(MACLIST_FILE, "r") as f:
             maclist_data = json.load(f)
 
+        # ทำการดึงข้อมูลทีละ portal
         for portal_url, macs in maclist_data.items():
             for mac in macs:
                 try:
+                    # เช็คว่าช่องจาก MAC นี้ยังสามารถดึงข้อมูลได้หรือไม่
                     channels = get_channels(portal_url, mac)
-                    # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
+                    
+                    # ถ้าไม่สามารถดึงข้อมูลช่องได้ให้ข้ามไป portal ถัดไป
+                    if not channels:
+                        print(f"MAC {mac} @ {portal_url} is no longer valid, skipping...")
+                        continue
+                    
+                    # ถ้าสามารถดึงข้อมูลได้ ก็เพิ่มช่องใน M3U
                     for ch in channels:
                         name = ch.get("name", "NoName")
                         url = get_stream_url(ch.get("cmd", ""))
@@ -122,8 +134,17 @@ def playlist():
                                 "name": f"{name} ({mac})",
                                 "cmd": url
                             })
+
+                    # แสดงผลหรือทำการ pause เพื่อให้มั่นใจว่าใช้ MAC เดิมจนกว่าจะหมด
+                    print(f"Successfully fetched channels for {mac} @ {portal_url}")
+                
                 except Exception as e:
                     print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
+                    # ถ้าดึงข้อมูลไม่สำเร็จ ให้ข้ามไปยัง portal ถัดไป
+                    continue
+
+                # ในกรณีนี้รอให้การดึงข้อมูลจาก MAC เดิมเสร็จสิ้นก่อน (ไม่ข้ามไป portal ถัดไป)
+                time.sleep(1)  # หากต้องการให้รอ 1 วินาทีระหว่างการดึงข้อมูลแต่ละ MAC
 
         # สร้าง M3U
         output = "#EXTM3U\n"
