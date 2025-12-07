@@ -1,4 +1,4 @@
-from flask import Flask, Response
+from flask import Flask, Response, request, stream_with_context
 import requests
 import time
 import json
@@ -6,13 +6,9 @@ import os
 
 app = Flask(__name__)
 
-# ไฟล์ MAC และ URL
 MACLIST_FILE = "maclist.json"
-
-# เวลา token หมดอายุ (วินาที)
 TOKEN_LIFETIME = 3600
 
-# session สำหรับ requests
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0",
@@ -20,18 +16,15 @@ session.headers.update({
     "X-User-Device": "MAG254",
 })
 
-# เก็บ token ของแต่ละ MAC/URL
 tokens = {}
 
 def handshake(portal_url, mac):
-    """ทำ handshake สำหรับ MAC และ portal ที่ระบุ"""
     url = f"{portal_url}/server/load.php"
     headers = {
         "X-User-Device-Id": mac,
         "Cookie": f"mac={mac}; stb_lang=en"
     }
     resp = requests.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
-
     if resp.status_code != 200:
         raise Exception(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
 
@@ -54,7 +47,6 @@ def handshake(portal_url, mac):
     }
 
 def check_token(portal_url, mac):
-    """เช็ค token ถ้าเก่าหรือไม่มีให้ handshake ใหม่"""
     key = (portal_url, mac)
     info = tokens.get(key)
     if not info or (time.time() - info["time"]) > TOKEN_LIFETIME:
@@ -62,11 +54,9 @@ def check_token(portal_url, mac):
     return tokens[key]["headers"]
 
 def get_channels(portal_url, mac):
-    """ดึง channels ของ MAC นั้น"""
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
     resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
-
     if resp.status_code != 200:
         print(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
         return []
@@ -77,7 +67,6 @@ def get_channels(portal_url, mac):
         print(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
         return []
 
-    # 🔹 FIX — รองรับ dict และ list
     if isinstance(data, dict):
         channels = data.get("js", {}).get("data", [])
     elif isinstance(data, list):
@@ -86,7 +75,6 @@ def get_channels(portal_url, mac):
         print(f"Unexpected JSON format: {type(data)}")
         channels = []
 
-    # แปลงเป็นรูปแบบมาตรฐาน
     fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
@@ -99,7 +87,6 @@ def get_channels(portal_url, mac):
     return fixed_channels
 
 def get_stream_url(cmd):
-    """ดึง URL ของ stream จาก cmd"""
     if not cmd:
         return None
     for part in cmd.split():
@@ -107,12 +94,33 @@ def get_stream_url(cmd):
             return part
     return None
 
+# ---------------- Proxy Stream ----------------
+@app.route("/stream/<portal>/<mac>/<channel_id>.ts")
+def proxy_stream(portal, mac, channel_id):
+    try:
+        headers = check_token(portal, mac)
+        channels = get_channels(portal, mac)
+        ch = next((c for c in channels if str(hash(c['name'])) == channel_id), None)
+        if not ch:
+            return "Channel not found", 404
+
+        url = get_stream_url(ch.get("cmd"))
+        if not url:
+            return "Invalid stream URL", 404
+
+        resp = requests.get(url, headers=headers, stream=True, timeout=10)
+        return Response(
+            stream_with_context(resp.iter_content(chunk_size=1024)),
+            content_type=resp.headers.get("Content-Type", "video/mp2t")
+        )
+    except Exception as e:
+        return f"Error: {e}", 500
+
+# ---------------- Playlist M3U ----------------
 @app.route("/playlist.m3u")
 def playlist():
     try:
         all_channels = []
-
-        # โหลด MAC list จากไฟล์
         if not os.path.exists(MACLIST_FILE):
             return Response(f"Error: {MACLIST_FILE} does not exist!", mimetype="text/plain")
 
@@ -123,22 +131,20 @@ def playlist():
             for mac in macs:
                 try:
                     channels = get_channels(portal_url, mac)
-                    # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
                     for ch in channels:
                         name = ch.get("name", "NoName")
-                        url = get_stream_url(ch.get("cmd", ""))
-                        if url:
-                            all_channels.append({
-                                "name": f"{name} ({mac})",
-                                "cmd": url
-                            })
+                        channel_id = str(hash(name))
+                        proxy_url = f"http://{request.host}/stream/{portal_url}/{mac}/{channel_id}.ts"
+                        all_channels.append({
+                            "name": f"{name} ({mac})",
+                            "proxy_url": proxy_url
+                        })
                 except Exception as e:
                     print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
 
-        # สร้าง M3U
         output = "#EXTM3U\n"
         for ch in all_channels:
-            output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
+            output += f"#EXTINF:-1,{ch['name']}\n{ch['proxy_url']}\n"
 
         return Response(output, mimetype="audio/x-mpegurl")
 
@@ -151,4 +157,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
