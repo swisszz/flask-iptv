@@ -6,11 +6,13 @@ import os
 
 app = Flask(__name__)
 
-# swisszz
-MACLIST_FILE = "maclist.json"  # ไฟล์ MAC และ URL
+# ไฟล์ MAC และ URL
+MACLIST_FILE = "maclist.json"
 
+# เวลา token หมดอายุ (วินาที)
 TOKEN_LIFETIME = 3600
 
+# session สำหรับ requests
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0",
@@ -41,7 +43,7 @@ def handshake(portal_url, mac):
     token = data.get("js", {}).get("token")
     if not token:
         raise Exception(f"Handshake failed for {mac} @ {portal_url}")
-    
+
     tokens[(portal_url, mac)] = {
         "token": token,
         "time": time.time(),
@@ -75,9 +77,16 @@ def get_channels(portal_url, mac):
         print(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
         return []
 
-    channels = data.get("js", {}).get("data", [])
-    
-    # ถ้า channels เป็น list ของ list แปลงเป็น dict
+    # 🔹 FIX — รองรับ dict และ list
+    if isinstance(data, dict):
+        channels = data.get("js", {}).get("data", [])
+    elif isinstance(data, list):
+        channels = data
+    else:
+        print(f"Unexpected JSON format: {type(data)}")
+        channels = []
+
+    # แปลงเป็นรูปแบบมาตรฐาน
     fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
@@ -90,6 +99,7 @@ def get_channels(portal_url, mac):
     return fixed_channels
 
 def get_stream_url(cmd):
+    """ดึง URL ของ stream จาก cmd"""
     if not cmd:
         return None
     for part in cmd.split():
@@ -105,7 +115,7 @@ def playlist():
         # โหลด MAC list จากไฟล์
         if not os.path.exists(MACLIST_FILE):
             return Response(f"Error: {MACLIST_FILE} does not exist!", mimetype="text/plain")
-        
+
         with open(MACLIST_FILE, "r") as f:
             maclist_data = json.load(f)
 
