@@ -11,6 +11,7 @@ MACLIST_FILE = "maclist.json"  # ไฟล์ MAC และ URL
 
 TOKEN_LIFETIME = 3600
 
+# ใช้ Session เพื่อเพิ่มประสิทธิภาพในการเชื่อมต่อ
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0",
@@ -28,7 +29,7 @@ def handshake(portal_url, mac):
         "X-User-Device-Id": mac,
         "Cookie": f"mac={mac}; stb_lang=en"
     }
-    resp = requests.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
+    resp = session.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
 
     if resp.status_code != 200:
         raise Exception(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
@@ -63,7 +64,7 @@ def get_channels(portal_url, mac):
     """ดึง channels ของ MAC นั้น"""
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
-    resp = requests.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
+    resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
 
     if resp.status_code != 200:
         print(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
@@ -90,6 +91,7 @@ def get_channels(portal_url, mac):
     return fixed_channels
 
 def get_stream_url(cmd):
+    """ดึง URL ของสตรีมจากคำสั่ง"""
     if not cmd:
         return None
     for part in cmd.split():
@@ -107,7 +109,10 @@ def playlist():
             return Response(f"Error: {MACLIST_FILE} does not exist!", mimetype="text/plain")
         
         with open(MACLIST_FILE, "r") as f:
-            maclist_data = json.load(f)
+            try:
+                maclist_data = json.load(f)
+            except json.JSONDecodeError as e:
+                return Response(f"Error: Failed to parse {MACLIST_FILE}: {e}", mimetype="text/plain")
 
         for portal_url, macs in maclist_data.items():
             for mac in macs:
