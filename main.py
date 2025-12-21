@@ -185,6 +185,52 @@ def get_channel_logo(channel, portal_url):
     return portal_url.rstrip("/") + "/" + logo.lstrip("/")
 
 # -------------------------------
+# EPG helpers
+# -------------------------------
+def get_epg(portal_url, mac):
+    """ดึงรายการ TV guide จาก portal"""
+    resp = portal_get(
+        portal_url,
+        mac,
+        params={"type": "itv", "action": "get_epg"}
+    )
+    if resp.status_code != 200:
+        return []
+
+    data = resp.json()
+    return data.get("js", {}).get("data", [])
+
+def generate_epg_xml(maclist_data):
+    """สร้าง EPG แบบ XMLTV"""
+    output = '<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n'
+
+    for portal_url, macs in maclist_data.items():
+        for mac in macs:
+            try:
+                epg_data = get_epg(portal_url, mac)
+                for ch_epg in epg_data:
+                    channel_id = ch_epg.get("channel_id")
+                    output += f'  <channel id="{channel_id}">\n'
+                    output += f'    <display-name>{ch_epg.get("name","NoName")}</display-name>\n'
+                    output += '  </channel>\n'
+
+                    for event in ch_epg.get("events", []):
+                        start = event.get("start")
+                        stop = event.get("stop")
+                        title = event.get("title", "")
+                        desc = event.get("description", "")
+                        output += f'  <programme start="{start}" stop="{stop}" channel="{channel_id}">\n'
+                        output += f'    <title>{title}</title>\n'
+                        if desc:
+                            output += f'    <desc>{desc}</desc>\n'
+                        output += '  </programme>\n'
+            except Exception as e:
+                print(f"Error fetching EPG {portal_url} {mac}: {e}")
+
+    output += "</tv>\n"
+    return output
+
+# -------------------------------
 # Routes
 # -------------------------------
 @app.route("/playlist.m3u")
@@ -248,6 +294,17 @@ def play():
         return Response(generate(), content_type=upstream.headers.get("Content-Type", "video/mp2t"))
     except Exception as e:
         return Response(str(e), status=500)
+
+@app.route("/epg.xml")
+def epg():
+    if not os.path.exists(MACLIST_FILE):
+        return Response("maclist.json not found", mimetype="text/plain")
+
+    with open(MACLIST_FILE, "r", encoding="utf-8") as f:
+        maclist_data = json.load(f)
+
+    xml_output = generate_epg_xml(maclist_data)
+    return Response(xml_output, mimetype="application/xml")
 
 @app.route("/")
 def home():
