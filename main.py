@@ -1,9 +1,10 @@
-from flask import Flask, Response
+from flask import Flask, Response, request
 import requests
 import time
 import json
 import os
 from threading import Lock
+from urllib.parse import quote_plus
 
 app = Flask(__name__)
 
@@ -77,12 +78,12 @@ def check_token(portal_url, mac):
 
 
 # -------------------------------
-# Portal GET (รองรับ 401 retry)
+# Portal GET (401 retry)
 # -------------------------------
 def portal_get(portal_url, mac, params, timeout=10):
     url = f"{portal_url}/server/load.php"
-
     headers = check_token(portal_url, mac)
+
     resp = session.get(
         url,
         params=params,
@@ -90,19 +91,40 @@ def portal_get(portal_url, mac, params, timeout=10):
         timeout=timeout
     )
 
-    # token ถูก invalidate ก่อนเวลา
     if resp.status_code == 401:
-        print(f"[401] Token expired/revoked → handshake again ({portal_url}, {mac})")
-
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
-
-        # retry 1 ครั้ง
         resp = session.get(
             url,
             params=params,
             headers=headers,
             timeout=timeout
+        )
+
+    return resp
+
+
+# -------------------------------
+# Stream from portal
+# -------------------------------
+def portal_stream(portal_url, mac, stream_url):
+    headers = check_token(portal_url, mac)
+
+    resp = session.get(
+        stream_url,
+        headers=headers,
+        stream=True,
+        timeout=10
+    )
+
+    if resp.status_code == 401:
+        handshake(portal_url, mac)
+        headers = check_token(portal_url, mac)
+        resp = session.get(
+            stream_url,
+            headers=headers,
+            stream=True,
+            timeout=10
         )
 
     return resp
@@ -184,7 +206,7 @@ def playlist():
     with open(MACLIST_FILE, "r", encoding="utf-8") as f:
         maclist_data = json.load(f)
 
-    channels_out = []
+    output = "#EXTM3U\n"
 
     for portal_url, macs in maclist_data.items():
         for mac in macs:
@@ -195,35 +217,70 @@ def playlist():
                     if not is_live_tv(ch):
                         continue
 
-                    stream_url = get_stream_url(ch.get("cmd", ""))
-                    if not stream_url:
-                        continue
+                    logo = get_channel_logo(ch, portal_url)
+                    logo_attr = f' tvg-logo="{logo}"' if logo else ""
 
-                    channels_out.append({
-                        "name": ch.get("name", "NoName"),
-                        "url": stream_url,
-                        "logo": get_channel_logo(ch, portal_url),
-                        "group": "Live TV"
-                    })
+                    play_url = (
+                        f"http://YOUR_SERVER_IP:10000/play"
+                        f"?portal={quote_plus(portal_url)}"
+                        f"&mac={mac}"
+                        f"&cmd={quote_plus(ch.get('cmd',''))}"
+                    )
+
+                    output += (
+                        f'#EXTINF:-1{logo_attr} group-title="Live TV",{ch.get("name","NoName")}\n'
+                        f'{play_url}\n'
+                    )
 
             except Exception as e:
                 print(f"Error {portal_url} {mac}: {e}")
 
-    output = "#EXTM3U\n"
-    for ch in channels_out:
-        logo_attr = f' tvg-logo="{ch["logo"]}"' if ch["logo"] else ""
-        output += (
-            f'#EXTINF:-1{logo_attr} group-title="{ch["group"]}",{ch["name"]}\n'
-            f'{ch["url"]}\n'
+    return Response(output, mimetype="audio/x-mpegurl")
+
+
+@app.route("/play")
+def play():
+    portal_url = request.args.get("portal")
+    mac = request.args.get("mac")
+    cmd = request.args.get("cmd")
+
+    if not portal_url or not mac or not cmd:
+        return Response("Missing parameters", status=400)
+
+    stream_url = get_stream_url(cmd)
+    if not stream_url:
+        return Response("Invalid stream cmd", status=400)
+
+    try:
+        upstream = portal_stream(portal_url, mac, stream_url)
+
+        if upstream.status_code != 200:
+            return Response(
+                f"Upstream error {upstream.status_code}",
+                status=upstream.status_code
+            )
+
+        def generate():
+            for chunk in upstream.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+
+        return Response(
+            generate(),
+            content_type=upstream.headers.get(
+                "Content-Type",
+                "video/mp2t"
+            )
         )
 
-    return Response(output, mimetype="audio/x-mpegurl")
+    except Exception as e:
+        return Response(str(e), status=500)
 
 
 @app.route("/")
 def home():
-    return "Live TV M3U Server is running"
+    return "Live TV Stream Proxy is running"
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000, threaded=True)
