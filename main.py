@@ -5,6 +5,7 @@ import json
 import os
 from threading import Lock
 from urllib.parse import quote_plus
+import random
 
 app = Flask(__name__)
 
@@ -27,11 +28,18 @@ session.headers.update({
 tokens = {}
 token_lock = Lock()
 
+# -------------------------------
+# Random delay helper
+# -------------------------------
+def random_delay(min_sec=0.1, max_sec=0.5):
+    """Delay แบบสุ่มเพื่อหลีกเลี่ยง portal detect"""
+    time.sleep(random.uniform(min_sec, max_sec))
 
 # -------------------------------
 # Handshake / Token
 # -------------------------------
 def handshake(portal_url, mac):
+    random_delay()  # delay ก่อน handshake
     url = f"{portal_url}/server/load.php"
     headers = {
         "X-User-Device-Id": mac,
@@ -63,7 +71,6 @@ def handshake(portal_url, mac):
             }
         }
 
-
 def check_token(portal_url, mac):
     key = (portal_url, mac)
 
@@ -76,11 +83,11 @@ def check_token(portal_url, mac):
 
     return tokens[key]["headers"]
 
-
 # -------------------------------
-# Portal GET (รองรับ 401 retry)
+# Portal GET (รองรับ 401 retry + delay)
 # -------------------------------
 def portal_get(portal_url, mac, params, timeout=10):
+    random_delay()  # delay ก่อน request
     url = f"{portal_url}/server/load.php"
     headers = check_token(portal_url, mac)
 
@@ -94,6 +101,7 @@ def portal_get(portal_url, mac, params, timeout=10):
     if resp.status_code == 401:
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
+        random_delay()  # delay ก่อน retry
         resp = session.get(
             url,
             params=params,
@@ -103,11 +111,11 @@ def portal_get(portal_url, mac, params, timeout=10):
 
     return resp
 
-
 # -------------------------------
-# Stream from portal (รองรับ retry token)
+# Stream from portal (รองรับ retry token + delay)
 # -------------------------------
 def portal_stream(portal_url, mac, stream_url):
+    random_delay()  # delay ก่อน request
     headers = check_token(portal_url, mac)
 
     resp = session.get(
@@ -120,6 +128,7 @@ def portal_stream(portal_url, mac, stream_url):
     if resp.status_code == 401:
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
+        random_delay()  # delay ก่อน retry
         resp = session.get(
             stream_url,
             headers=headers,
@@ -128,7 +137,6 @@ def portal_stream(portal_url, mac, stream_url):
         )
 
     return resp
-
 
 # -------------------------------
 # Channel helpers
@@ -155,7 +163,6 @@ def get_channels(portal_url, mac):
 
     return fixed
 
-
 def is_live_tv(channel):
     cmd = channel.get("cmd", "").lower()
     ch_type = channel.get("type", "").lower()
@@ -167,17 +174,14 @@ def is_live_tv(channel):
 
     return any(p in cmd for p in ["http://", "https://", "udp://", "rtp://"])
 
-
 def get_stream_url(cmd):
     if not cmd:
         return None
-
     cmd = cmd.replace("ffmpeg", "")
     for part in cmd.split():
         if part.startswith(("http://", "https://", "udp://", "rtp://")):
             return part
     return None
-
 
 def get_channel_logo(channel, portal_url):
     logo = (
@@ -185,15 +189,11 @@ def get_channel_logo(channel, portal_url):
         channel.get("icon") or
         channel.get("logo_url")
     )
-
     if not logo:
         return None
-
     if logo.startswith("http"):
         return logo
-
     return portal_url.rstrip("/") + "/" + logo.lstrip("/")
-
 
 # -------------------------------
 # Routes
@@ -212,15 +212,11 @@ def playlist():
         for mac in macs:
             try:
                 channels = get_channels(portal_url, mac)
-
                 for ch in channels:
                     if not is_live_tv(ch):
                         continue
-
                     logo = get_channel_logo(ch, portal_url)
                     logo_attr = f' tvg-logo="{logo}"' if logo else ""
-
-                    # ใช้ host ของ request แทน YOUR_SERVER_IP
                     host = request.host
                     play_url = (
                         f"http://{host}/play"
@@ -228,17 +224,14 @@ def playlist():
                         f"&mac={mac}"
                         f"&cmd={quote_plus(ch.get('cmd',''))}"
                     )
-
                     output += (
                         f'#EXTINF:-1{logo_attr} group-title="Live TV",{ch.get("name","NoName")}\n'
                         f'{play_url}\n'
                     )
-
             except Exception as e:
                 print(f"Error {portal_url} {mac}: {e}")
 
     return Response(output, mimetype="audio/x-mpegurl")
-
 
 @app.route("/play")
 def play():
@@ -255,7 +248,6 @@ def play():
 
     try:
         upstream = portal_stream(portal_url, mac, stream_url)
-
         if upstream.status_code != 200:
             return Response(
                 f"Upstream error {upstream.status_code}",
@@ -269,24 +261,15 @@ def play():
 
         return Response(
             generate(),
-            content_type=upstream.headers.get(
-                "Content-Type",
-                "video/mp2t"
-            )
+            content_type=upstream.headers.get("Content-Type", "video/mp2t")
         )
-
     except Exception as e:
         return Response(str(e), status=500)
-
 
 @app.route("/")
 def home():
     return "Live TV Stream Proxy is running"
 
-
-import os
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, threaded=True)
-
