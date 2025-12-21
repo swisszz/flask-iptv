@@ -10,7 +10,8 @@ import random
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 3600
+TOKEN_LIFETIME = 3600        # อายุ token (1 ชั่วโมง)
+TOKEN_REFRESH_INTERVAL = 3600 * 2  # รีเฟรช token ทุก 2 ชั่วโมง
 
 # -------------------------------
 # Session
@@ -73,38 +74,53 @@ def handshake(portal_url, mac):
 
 def check_token(portal_url, mac):
     key = (portal_url, mac)
+    now = time.time()
+
     with token_lock:
         info = tokens.get(key)
-        expired = not info or (time.time() - info["time"]) > TOKEN_LIFETIME - 300  # preemptive refresh 5 นาที
+        expired = not info or (now - info["time"]) > TOKEN_LIFETIME
+        refresh_needed = not info or (now - info["time"]) > TOKEN_REFRESH_INTERVAL
 
-    if expired:
+    if expired or refresh_needed:
         handshake(portal_url, mac)
+
     return tokens[key]["headers"]
 
 # -------------------------------
-# Portal GET (playlist, ใช้ delay)
+# Portal GET / Stream
 # -------------------------------
 def portal_get(portal_url, mac, params, timeout=10):
     random_delay()
     url = f"{portal_url}/server/load.php"
     headers = check_token(portal_url, mac)
-    resp = session.get(url, params=params, headers=headers, timeout=timeout)
+
+    resp = session.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=timeout
+    )
+
     if resp.status_code == 401:
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
+        random_delay()
         resp = session.get(url, params=params, headers=headers, timeout=timeout)
+
     return resp
 
-# -------------------------------
-# Stream from portal (smooth proxy)
-# -------------------------------
 def portal_stream(portal_url, mac, stream_url):
+    random_delay()
     headers = check_token(portal_url, mac)
+
     resp = session.get(stream_url, headers=headers, stream=True, timeout=10)
+
     if resp.status_code == 401:
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
+        random_delay()
         resp = session.get(stream_url, headers=headers, stream=True, timeout=10)
+
     return resp
 
 # -------------------------------
@@ -114,6 +130,7 @@ def get_channels(portal_url, mac):
     resp = portal_get(portal_url, mac, params={"type": "itv", "action": "get_all_channels"})
     if resp.status_code != 200:
         return []
+
     data = resp.json()
     channels = data.get("js", {}).get("data", [])
     fixed = []
@@ -127,7 +144,9 @@ def get_channels(portal_url, mac):
 def is_live_tv(channel):
     cmd = channel.get("cmd", "").lower()
     ch_type = channel.get("type", "").lower()
-    if "vod" in cmd or "play_vod" in cmd or ch_type == "vod":
+    if "vod" in cmd or "play_vod" in cmd:
+        return False
+    if ch_type == "vod":
         return False
     return any(p in cmd for p in ["http://", "https://", "udp://", "rtp://"])
 
@@ -160,6 +179,7 @@ def playlist():
         maclist_data = json.load(f)
 
     output = "#EXTM3U\n"
+
     for portal_url, macs in maclist_data.items():
         for mac in macs:
             try:
@@ -170,10 +190,19 @@ def playlist():
                     logo = get_channel_logo(ch, portal_url)
                     logo_attr = f' tvg-logo="{logo}"' if logo else ""
                     host = request.host
-                    play_url = f"http://{host}/play?portal={quote_plus(portal_url)}&mac={mac}&cmd={quote_plus(ch.get('cmd',''))}"
-                    output += f'#EXTINF:-1{logo_attr} group-title="Live TV",{ch.get("name","NoName")}\n{play_url}\n'
+                    play_url = (
+                        f"http://{host}/play"
+                        f"?portal={quote_plus(portal_url)}"
+                        f"&mac={mac}"
+                        f"&cmd={quote_plus(ch.get('cmd',''))}"
+                    )
+                    output += (
+                        f'#EXTINF:-1{logo_attr} group-title="Live TV",{ch.get("name","NoName")}\n'
+                        f'{play_url}\n'
+                    )
             except Exception as e:
                 print(f"Error {portal_url} {mac}: {e}")
+
     return Response(output, mimetype="audio/x-mpegurl")
 
 @app.route("/play")
@@ -181,6 +210,7 @@ def play():
     portal_url = request.args.get("portal")
     mac = request.args.get("mac")
     cmd = request.args.get("cmd")
+
     if not portal_url or not mac or not cmd:
         return Response("Missing parameters", status=400)
 
@@ -194,7 +224,7 @@ def play():
             return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
 
         def generate():
-            for chunk in upstream.iter_content(chunk_size=32768):  # เพิ่ม chunk size smooth
+            for chunk in upstream.iter_content(chunk_size=8192):
                 if chunk:
                     yield chunk
 
