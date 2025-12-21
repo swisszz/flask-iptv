@@ -10,7 +10,9 @@ app = Flask(__name__)
 MACLIST_FILE = "maclist.json"
 TOKEN_LIFETIME = 3600
 
+# -------------------------------
 # Session
+# -------------------------------
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0",
@@ -18,7 +20,9 @@ session.headers.update({
     "X-User-Device": "MAG254",
 })
 
+# -------------------------------
 # Token cache
+# -------------------------------
 tokens = {}
 token_lock = Lock()
 
@@ -73,17 +77,45 @@ def check_token(portal_url, mac):
 
 
 # -------------------------------
+# Portal GET (รองรับ 401 retry)
+# -------------------------------
+def portal_get(portal_url, mac, params, timeout=10):
+    url = f"{portal_url}/server/load.php"
+
+    headers = check_token(portal_url, mac)
+    resp = session.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=timeout
+    )
+
+    # token ถูก invalidate ก่อนเวลา
+    if resp.status_code == 401:
+        print(f"[401] Token expired/revoked → handshake again ({portal_url}, {mac})")
+
+        handshake(portal_url, mac)
+        headers = check_token(portal_url, mac)
+
+        # retry 1 ครั้ง
+        resp = session.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout
+        )
+
+    return resp
+
+
+# -------------------------------
 # Channel helpers
 # -------------------------------
 def get_channels(portal_url, mac):
-    headers = check_token(portal_url, mac)
-    url = f"{portal_url}/server/load.php"
-
-    resp = session.get(
-        url,
-        params={"type": "itv", "action": "get_all_channels"},
-        headers=headers,
-        timeout=10
+    resp = portal_get(
+        portal_url,
+        mac,
+        params={"type": "itv", "action": "get_all_channels"}
     )
 
     if resp.status_code != 200:
@@ -106,19 +138,19 @@ def is_live_tv(channel):
     cmd = channel.get("cmd", "").lower()
     ch_type = channel.get("type", "").lower()
 
-    # ตัด VOD / Series
     if "vod" in cmd or "play_vod" in cmd:
         return False
     if ch_type == "vod":
         return False
 
-    # ต้องเป็น stream สด
     return any(p in cmd for p in ["http://", "https://", "udp://", "rtp://"])
 
 
 def get_stream_url(cmd):
     if not cmd:
         return None
+
+    cmd = cmd.replace("ffmpeg", "")
     for part in cmd.split():
         if part.startswith(("http://", "https://", "udp://", "rtp://")):
             return part
@@ -177,7 +209,6 @@ def playlist():
             except Exception as e:
                 print(f"Error {portal_url} {mac}: {e}")
 
-    # Build M3U
     output = "#EXTM3U\n"
     for ch in channels_out:
         logo_attr = f' tvg-logo="{ch["logo"]}"' if ch["logo"] else ""
@@ -196,6 +227,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-    
-   
