@@ -5,7 +5,6 @@ import json
 import os
 from threading import Lock
 from urllib.parse import quote
-import random
 
 app = Flask(__name__)
 
@@ -29,17 +28,9 @@ tokens = {}
 token_lock = Lock()
 
 # -------------------------------
-# Random delay helper
-# -------------------------------
-def random_delay(min_sec=0.1, max_sec=0.5):
-    """Delay แบบสุ่มเพื่อหลีกเลี่ยง portal detect"""
-    time.sleep(random.uniform(min_sec, max_sec))
-
-# -------------------------------
 # Handshake / Token
 # -------------------------------
 def handshake(portal_url, mac):
-    random_delay()
     url = f"{portal_url}/server/load.php"
     headers = {
         "X-User-Device-Id": mac,
@@ -91,7 +82,6 @@ def check_token(portal_url, mac):
 # Portal GET helper
 # -------------------------------
 def portal_get(portal_url, mac, params, timeout=10):
-    random_delay()
     url = f"{portal_url}/server/load.php"
     headers = check_token(portal_url, mac)
 
@@ -100,7 +90,6 @@ def portal_get(portal_url, mac, params, timeout=10):
     if resp.status_code == 401:
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
-        random_delay()
         resp = session.get(url, params=params, headers=headers, timeout=timeout)
 
     return resp
@@ -109,16 +98,13 @@ def portal_get(portal_url, mac, params, timeout=10):
 # Stream proxy
 # -------------------------------
 def portal_stream(portal_url, mac, stream_url):
-    random_delay()
     headers = check_token(portal_url, mac)
-
-    resp = session.get(stream_url, headers=headers, stream=True, timeout=10)
+    resp = session.get(stream_url, headers=headers, stream=True, timeout=60)
 
     if resp.status_code == 401:
         handshake(portal_url, mac)
         headers = check_token(portal_url, mac)
-        random_delay()
-        resp = session.get(stream_url, headers=headers, stream=True, timeout=10)
+        resp = session.get(stream_url, headers=headers, stream=True, timeout=60)
 
     return resp
 
@@ -232,11 +218,15 @@ def play():
             return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
 
         def generate():
-            for chunk in upstream.iter_content(chunk_size=8192):
+            for chunk in upstream.iter_content(chunk_size=65536):  # 64KB
                 if chunk:
                     yield chunk
 
-        return Response(generate(), content_type=upstream.headers.get("Content-Type", "video/mp2t"))
+        return Response(
+            generate(),
+            content_type=upstream.headers.get("Content-Type", "video/mp2t"),
+            direct_passthrough=True
+        )
     except Exception as e:
         return Response(str(e), status=500)
 
