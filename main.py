@@ -1,4 +1,4 @@
-from flask import Flask, Response, request
+from flask import Flask, Response
 import requests
 import time
 import json
@@ -22,6 +22,7 @@ session.headers.update({
 tokens = {}
 token_lock = Lock()
 
+
 # -------------------------------
 # Handshake / Token
 # -------------------------------
@@ -31,28 +32,45 @@ def handshake(portal_url, mac):
         "X-User-Device-Id": mac,
         "Cookie": f"mac={mac}; stb_lang=en"
     }
-    resp = session.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
+
+    resp = session.get(
+        url,
+        params={"type": "stb", "action": "handshake"},
+        headers=headers,
+        timeout=10
+    )
+
     if resp.status_code != 200:
         raise Exception(f"Handshake HTTP {resp.status_code}")
+
     data = resp.json()
     token = data.get("js", {}).get("token")
     if not token:
         raise Exception("Handshake failed (no token)")
+
     with token_lock:
         tokens[(portal_url, mac)] = {
             "token": token,
             "time": time.time(),
-            "headers": {**headers, "Authorization": f"Bearer {token}"}
+            "headers": {
+                **headers,
+                "Authorization": f"Bearer {token}"
+            }
         }
+
 
 def check_token(portal_url, mac):
     key = (portal_url, mac)
+
     with token_lock:
         info = tokens.get(key)
         expired = not info or (time.time() - info["time"]) > TOKEN_LIFETIME
+
     if expired:
         handshake(portal_url, mac)
+
     return tokens[key]["headers"]
+
 
 # -------------------------------
 # Channel helpers
@@ -60,32 +78,68 @@ def check_token(portal_url, mac):
 def get_channels(portal_url, mac):
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
-    resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
+
+    resp = session.get(
+        url,
+        params={"type": "itv", "action": "get_all_channels"},
+        headers=headers,
+        timeout=10
+    )
+
     if resp.status_code != 200:
         return []
+
     data = resp.json()
     channels = data.get("js", {}).get("data", [])
+
     fixed = []
     for ch in channels:
         if isinstance(ch, dict):
             fixed.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             fixed.append({"name": ch[0], "cmd": ch[1]})
+
     return fixed
+
 
 def is_live_tv(channel):
     cmd = channel.get("cmd", "").lower()
     ch_type = channel.get("type", "").lower()
-    if "vod" in cmd or "play_vod" in cmd: return False
-    if ch_type == "vod": return False
+
+    # ตัด VOD / Series
+    if "vod" in cmd or "play_vod" in cmd:
+        return False
+    if ch_type == "vod":
+        return False
+
+    # ต้องเป็น stream สด
     return any(p in cmd for p in ["http://", "https://", "udp://", "rtp://"])
 
+
 def get_stream_url(cmd):
-    if not cmd: return None
+    if not cmd:
+        return None
     for part in cmd.split():
         if part.startswith(("http://", "https://", "udp://", "rtp://")):
             return part
     return None
+
+
+def get_channel_logo(channel, portal_url):
+    logo = (
+        channel.get("logo") or
+        channel.get("icon") or
+        channel.get("logo_url")
+    )
+
+    if not logo:
+        return None
+
+    if logo.startswith("http"):
+        return logo
+
+    return portal_url.rstrip("/") + "/" + logo.lstrip("/")
+
 
 # -------------------------------
 # Routes
@@ -94,45 +148,46 @@ def get_stream_url(cmd):
 def playlist():
     if not os.path.exists(MACLIST_FILE):
         return Response("maclist.json not found", mimetype="text/plain")
+
     with open(MACLIST_FILE, "r", encoding="utf-8") as f:
         maclist_data = json.load(f)
-    output = "#EXTM3U\n"
+
+    channels_out = []
+
     for portal_url, macs in maclist_data.items():
         for mac in macs:
             try:
                 channels = get_channels(portal_url, mac)
+
                 for ch in channels:
-                    if not is_live_tv(ch): continue
-                    stream_url = get_stream_url(ch.get("cmd",""))
-                    if not stream_url: continue
-                    logo = ch.get("logo") or ""
-                    logo_attr = f' tvg-logo="{logo}"' if logo else ""
-                    play_url = f"/play?portal={portal_url}&mac={mac}&cmd={ch.get('cmd','')}"
-                    output += f'#EXTINF:-1{logo_attr} group-title="Live TV",{ch.get("name","NoName")}\n{play_url}\n'
+                    if not is_live_tv(ch):
+                        continue
+
+                    stream_url = get_stream_url(ch.get("cmd", ""))
+                    if not stream_url:
+                        continue
+
+                    channels_out.append({
+                        "name": ch.get("name", "NoName"),
+                        "url": stream_url,
+                        "logo": get_channel_logo(ch, portal_url),
+                        "group": "Live TV"
+                    })
+
             except Exception as e:
-                print(f"Playlist error {portal_url} {mac}: {e}")
+                print(f"Error {portal_url} {mac}: {e}")
+
+    # Build M3U
+    output = "#EXTM3U\n"
+    for ch in channels_out:
+        logo_attr = f' tvg-logo="{ch["logo"]}"' if ch["logo"] else ""
+        output += (
+            f'#EXTINF:-1{logo_attr} group-title="{ch["group"]}",{ch["name"]}\n'
+            f'{ch["url"]}\n'
+        )
+
     return Response(output, mimetype="audio/x-mpegurl")
 
-@app.route("/play")
-def play():
-    portal_url = request.args.get("portal")
-    mac = request.args.get("mac")
-    cmd = request.args.get("cmd")
-    if not portal_url or not mac or not cmd:
-        return Response("Missing parameters", status=400)
-    stream_url = get_stream_url(cmd)
-    if not stream_url:
-        return Response("Invalid stream cmd", status=400)
-    try:
-        upstream = session.get(stream_url, stream=True, timeout=10)
-        if upstream.status_code != 200:
-            return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
-        def generate():
-            for chunk in upstream.iter_content(chunk_size=262144):  # 256 KB
-                if chunk: yield chunk
-        return Response(generate(), content_type=upstream.headers.get("Content-Type","video/mp2t"))
-    except Exception as e:
-        return Response(str(e), status=500)
 
 @app.route("/")
 def home():
