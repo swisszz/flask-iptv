@@ -3,14 +3,15 @@ import requests
 import time
 import json
 import os
-from threading import Lock
 
 app = Flask(__name__)
 
-MACLIST_FILE = "maclist.json"
+# swisszz
+MACLIST_FILE = "maclist.json"  # ไฟล์ MAC และ URL
+
 TOKEN_LIFETIME = 3600
 
-# Session
+# ใช้ Session เพื่อเพิ่มประสิทธิภาพในการเชื่อมต่อ
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0",
@@ -18,181 +19,130 @@ session.headers.update({
     "X-User-Device": "MAG254",
 })
 
-# Token cache
+# เก็บ token ของแต่ละ MAC/URL
 tokens = {}
-token_lock = Lock()
 
-
-# -------------------------------
-# Handshake / Token
-# -------------------------------
 def handshake(portal_url, mac):
+    """ทำ handshake สำหรับ MAC และ portal ที่ระบุ"""
     url = f"{portal_url}/server/load.php"
     headers = {
         "X-User-Device-Id": mac,
         "Cookie": f"mac={mac}; stb_lang=en"
     }
-
-    resp = session.get(
-        url,
-        params={"type": "stb", "action": "handshake"},
-        headers=headers,
-        timeout=10
-    )
+    resp = session.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
 
     if resp.status_code != 200:
-        raise Exception(f"Handshake HTTP {resp.status_code}")
+        raise Exception(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise Exception(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
+
     token = data.get("js", {}).get("token")
     if not token:
-        raise Exception("Handshake failed (no token)")
-
-    with token_lock:
-        tokens[(portal_url, mac)] = {
-            "token": token,
-            "time": time.time(),
-            "headers": {
-                **headers,
-                "Authorization": f"Bearer {token}"
-            }
+        raise Exception(f"Handshake failed for {mac} @ {portal_url}")
+    
+    tokens[(portal_url, mac)] = {
+        "token": token,
+        "time": time.time(),
+        "headers": {
+            **headers,
+            "Authorization": f"Bearer {token}"
         }
-
+    }
 
 def check_token(portal_url, mac):
+    """เช็ค token ถ้าเก่าหรือไม่มีให้ handshake ใหม่"""
     key = (portal_url, mac)
-
-    with token_lock:
-        info = tokens.get(key)
-        expired = not info or (time.time() - info["time"]) > TOKEN_LIFETIME
-
-    if expired:
+    info = tokens.get(key)
+    if not info or (time.time() - info["time"]) > TOKEN_LIFETIME:
         handshake(portal_url, mac)
-
     return tokens[key]["headers"]
 
-
-# -------------------------------
-# Channel helpers
-# -------------------------------
 def get_channels(portal_url, mac):
+    """ดึง channels ของ MAC นั้น"""
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
-
-    resp = session.get(
-        url,
-        params={"type": "itv", "action": "get_all_channels"},
-        headers=headers,
-        timeout=10
-    )
+    resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
 
     if resp.status_code != 200:
+        print(f"Error: {mac} @ {portal_url} returned status code {resp.status_code}")
         return []
 
-    data = resp.json()
-    channels = data.get("js", {}).get("data", [])
+    try:
+        data = resp.json()
+    except ValueError as e:
+        print(f"Error parsing JSON response for {mac} @ {portal_url}: {e}")
+        return []
 
-    fixed = []
+    channels = data.get("js", {}).get("data", [])
+    
+    # ถ้า channels เป็น list ของ list แปลงเป็น dict
+    fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
-            fixed.append(ch)
+            fixed_channels.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
-            fixed.append({"name": ch[0], "cmd": ch[1]})
+            fixed_channels.append({"name": ch[0], "cmd": ch[1]})
+        else:
+            print(f"Unexpected channel format: {ch}")
 
-    return fixed
-
-
-def is_live_tv(channel):
-    cmd = channel.get("cmd", "").lower()
-    ch_type = channel.get("type", "").lower()
-
-    # ตัด VOD / Series
-    if "vod" in cmd or "play_vod" in cmd:
-        return False
-    if ch_type == "vod":
-        return False
-
-    # ต้องเป็น stream สด
-    return any(p in cmd for p in ["http://", "https://", "udp://", "rtp://"])
-
+    return fixed_channels
 
 def get_stream_url(cmd):
+    """ดึง URL ของสตรีมจากคำสั่ง"""
     if not cmd:
         return None
     for part in cmd.split():
-        if part.startswith(("http://", "https://", "udp://", "rtp://")):
+        if part.startswith("http"):
             return part
     return None
 
-
-def get_channel_logo(channel, portal_url):
-    logo = (
-        channel.get("logo") or
-        channel.get("icon") or
-        channel.get("logo_url")
-    )
-
-    if not logo:
-        return None
-
-    if logo.startswith("http"):
-        return logo
-
-    return portal_url.rstrip("/") + "/" + logo.lstrip("/")
-
-
-# -------------------------------
-# Routes
-# -------------------------------
 @app.route("/playlist.m3u")
 def playlist():
-    if not os.path.exists(MACLIST_FILE):
-        return Response("maclist.json not found", mimetype="text/plain")
+    try:
+        all_channels = []
 
-    with open(MACLIST_FILE, "r", encoding="utf-8") as f:
-        maclist_data = json.load(f)
-
-    channels_out = []
-
-    for portal_url, macs in maclist_data.items():
-        for mac in macs:
+        # โหลด MAC list จากไฟล์
+        if not os.path.exists(MACLIST_FILE):
+            return Response(f"Error: {MACLIST_FILE} does not exist!", mimetype="text/plain")
+        
+        with open(MACLIST_FILE, "r") as f:
             try:
-                channels = get_channels(portal_url, mac)
+                maclist_data = json.load(f)
+            except json.JSONDecodeError as e:
+                return Response(f"Error: Failed to parse {MACLIST_FILE}: {e}", mimetype="text/plain")
 
-                for ch in channels:
-                    if not is_live_tv(ch):
-                        continue
+        for portal_url, macs in maclist_data.items():
+            for mac in macs:
+                try:
+                    channels = get_channels(portal_url, mac)
+                    # เพิ่ม prefix ชื่อ MAC เพื่อแยกช่อง
+                    for ch in channels:
+                        name = ch.get("name", "NoName")
+                        url = get_stream_url(ch.get("cmd", ""))
+                        if url:
+                            all_channels.append({
+                                "name": f"{name} ({mac})",
+                                "cmd": url
+                            })
+                except Exception as e:
+                    print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
 
-                    stream_url = get_stream_url(ch.get("cmd", ""))
-                    if not stream_url:
-                        continue
+        # สร้าง M3U
+        output = "#EXTM3U\n"
+        for ch in all_channels:
+            output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
 
-                    channels_out.append({
-                        "name": ch.get("name", "NoName"),
-                        "url": stream_url,
-                        "logo": get_channel_logo(ch, portal_url),
-                        "group": "Live TV"
-                    })
+        return Response(output, mimetype="audio/x-mpegurl")
 
-            except Exception as e:
-                print(f"Error {portal_url} {mac}: {e}")
-
-    # Build M3U
-    output = "#EXTM3U\n"
-    for ch in channels_out:
-        logo_attr = f' tvg-logo="{ch["logo"]}"' if ch["logo"] else ""
-        output += (
-            f'#EXTINF:-1{logo_attr} group-title="{ch["group"]}",{ch["name"]}\n'
-            f'{ch["url"]}\n'
-        )
-
-    return Response(output, mimetype="audio/x-mpegurl")
-
+    except Exception as e:
+        return Response(f"Error: {e}", mimetype="text/plain")
 
 @app.route("/")
 def home():
-    return "Live TV Stream Proxy is running"
+    return "Server is running!"
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host="0.0.0.0", port=10000)
