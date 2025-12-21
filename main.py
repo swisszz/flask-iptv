@@ -287,7 +287,7 @@ def play():
             return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
 
         def generate():
-            for chunk in upstream.iter_content(chunk_size=65536):
+            for chunk in upstream.iter_content(chunk_size=262144):
                 if chunk:
                     yield chunk
 
@@ -313,4 +313,5 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, threaded=True)
+
 
