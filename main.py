@@ -3,17 +3,13 @@ import requests
 import time
 import json
 import os
-from threading import Lock
-from urllib.parse import quote
+from urllib.parse import quote_plus
 
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
 TOKEN_LIFETIME = 3600  # 1 ชั่วโมง
 
-# -------------------------------
-# Session
-# -------------------------------
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0",
@@ -21,98 +17,46 @@ session.headers.update({
     "X-User-Device": "MAG254",
 })
 
-# -------------------------------
-# Token cache
-# -------------------------------
 tokens = {}
-token_lock = Lock()
 
-# -------------------------------
+# --------------------------
 # Handshake / Token
-# -------------------------------
+# --------------------------
 def handshake(portal_url, mac):
     url = f"{portal_url}/server/load.php"
     headers = {
         "X-User-Device-Id": mac,
         "Cookie": f"mac={mac}; stb_lang=en"
     }
-
-    resp = session.get(
-        url,
-        params={"type": "stb", "action": "handshake"},
-        headers=headers,
-        timeout=10
-    )
-
+    resp = session.get(url, params={"type": "stb", "action": "handshake"}, headers=headers, timeout=10)
     if resp.status_code != 200:
         raise Exception(f"Handshake HTTP {resp.status_code}")
 
     data = resp.json()
     token = data.get("js", {}).get("token")
     if not token:
-        raise Exception("Handshake failed (no token)")
+        raise Exception(f"Handshake failed for {mac} @ {portal_url}")
 
-    with token_lock:
-        tokens[(portal_url, mac)] = {
-            "token": token,
-            "time": time.time(),
-            "headers": {**headers, "Authorization": f"Bearer {token}"}
-        }
+    tokens[(portal_url, mac)] = {
+        "token": token,
+        "time": time.time(),
+        "headers": {**headers, "Authorization": f"Bearer {token}"}
+    }
 
 def check_token(portal_url, mac):
     key = (portal_url, mac)
-
-    with token_lock:
-        info = tokens.get(key)
-        expired = not info or (time.time() - info["time"]) > TOKEN_LIFETIME
-
-    if expired:
+    info = tokens.get(key)
+    if not info or (time.time() - info["time"]) > TOKEN_LIFETIME:
         handshake(portal_url, mac)
-
-    # Cleanup expired tokens
-    now = time.time()
-    with token_lock:
-        for k in list(tokens.keys()):
-            if now - tokens[k]["time"] > TOKEN_LIFETIME * 2:
-                del tokens[k]
-
     return tokens[key]["headers"]
 
-# -------------------------------
-# Portal GET helper
-# -------------------------------
-def portal_get(portal_url, mac, params, timeout=10):
-    url = f"{portal_url}/server/load.php"
-    headers = check_token(portal_url, mac)
-
-    resp = session.get(url, params=params, headers=headers, timeout=timeout)
-
-    if resp.status_code == 401:
-        handshake(portal_url, mac)
-        headers = check_token(portal_url, mac)
-        resp = session.get(url, params=params, headers=headers, timeout=timeout)
-
-    return resp
-
-# -------------------------------
-# Stream proxy
-# -------------------------------
-def portal_stream(portal_url, mac, stream_url):
-    headers = check_token(portal_url, mac)
-    resp = session.get(stream_url, headers=headers, stream=True, timeout=60)
-
-    if resp.status_code == 401:
-        handshake(portal_url, mac)
-        headers = check_token(portal_url, mac)
-        resp = session.get(stream_url, headers=headers, stream=True, timeout=60)
-
-    return resp
-
-# -------------------------------
-# Channels helpers
-# -------------------------------
+# --------------------------
+# Channels
+# --------------------------
 def get_channels(portal_url, mac):
-    resp = portal_get(portal_url, mac, params={"type": "itv", "action": "get_all_channels"})
+    headers = check_token(portal_url, mac)
+    url = f"{portal_url}/server/load.php"
+    resp = session.get(url, params={"type": "itv", "action": "get_all_channels"}, headers=headers, timeout=10)
     if resp.status_code != 200:
         return []
 
@@ -125,15 +69,7 @@ def get_channels(portal_url, mac):
             fixed.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             fixed.append({"name": ch[0], "cmd": ch[1]})
-
     return fixed
-
-def is_live_tv(channel):
-    cmd = channel.get("cmd", "").lower()
-    ch_type = channel.get("type", "").lower()
-    if "vod" in cmd or ch_type == "vod":
-        return False
-    return any(p in cmd for p in ["http://", "https://", "udp://", "rtp://"])
 
 def get_stream_url(cmd):
     if not cmd:
@@ -153,20 +89,19 @@ def get_channel_logo(channel, portal_url):
     return portal_url.rstrip("/") + "/" + logo.lstrip("/")
 
 def get_channel_id(channel, mac):
-    """สร้าง tvg-id จากชื่อและ MAC"""
     name = channel.get("name", "NoName")
     safe_name = "".join(c for c in name if c.isalnum())
     mac_clean = mac.replace(":", "")
     return f"{safe_name}_{mac_clean}"
 
-# -------------------------------
+# --------------------------
 # Routes
-# -------------------------------
+# --------------------------
 @app.route("/playlist.m3u")
 def playlist():
     if not os.path.exists(MACLIST_FILE):
         return Response("maclist.json not found", mimetype="text/plain")
-
+    
     with open(MACLIST_FILE, "r", encoding="utf-8") as f:
         maclist_data = json.load(f)
 
@@ -177,19 +112,20 @@ def playlist():
             try:
                 channels = get_channels(portal_url, mac)
                 for ch in channels:
-                    if not is_live_tv(ch):
+                    url = get_stream_url(ch.get("cmd",""))
+                    if not url:
                         continue
                     logo = get_channel_logo(ch, portal_url)
-                    logo_attr = f' tvg-logo="{logo}"' if logo else ""
                     tvg_id = get_channel_id(ch, mac)
-                    tvg_name = ch.get("name", "NoName")
+                    tvg_name = ch.get("name","NoName")
                     host = request.host
                     play_url = (
                         f"http://{host}/play"
-                        f"?portal={quote(portal_url)}"
+                        f"?portal={quote_plus(portal_url)}"
                         f"&mac={mac}"
-                        f"&cmd={quote(ch.get('cmd',''))}"
+                        f"&cmd={quote_plus(ch.get('cmd',''))}"
                     )
+                    logo_attr = f' tvg-logo="{logo}"' if logo else ""
                     output += (
                         f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="Live TV",{tvg_name}\n'
                         f'{play_url}\n'
@@ -204,7 +140,6 @@ def play():
     portal_url = request.args.get("portal")
     mac = request.args.get("mac")
     cmd = request.args.get("cmd")
-
     if not portal_url or not mac or not cmd:
         return Response("Missing parameters", status=400)
 
@@ -213,26 +148,23 @@ def play():
         return Response("Invalid stream cmd", status=400)
 
     try:
-        upstream = portal_stream(portal_url, mac, stream_url)
+        headers = check_token(portal_url, mac)
+        upstream = session.get(stream_url, headers=headers, stream=True, timeout=10)
         if upstream.status_code != 200:
             return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
 
         def generate():
-            for chunk in upstream.iter_content(chunk_size=65536):  # 64KB
+            for chunk in upstream.iter_content(chunk_size=8192):
                 if chunk:
                     yield chunk
 
-        return Response(
-            generate(),
-            content_type=upstream.headers.get("Content-Type", "video/mp2t"),
-            direct_passthrough=True
-        )
+        return Response(generate(), content_type=upstream.headers.get("Content-Type", "video/mp2t"))
     except Exception as e:
         return Response(str(e), status=500)
 
 @app.route("/")
 def home():
-    return "Live TV Stream Proxy is running"
+    return "Live TV Proxy is running"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
