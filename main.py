@@ -6,10 +6,10 @@ import os
 
 app = Flask(__name__)
 
-# swisszz
-MACLIST_FILE = "maclist.json"  # ไฟล์ MAC และ URL
+# ไฟล์ MAC และ URL
+MACLIST_FILE = "maclist.json"
 
-TOKEN_LIFETIME = 3600
+TOKEN_LIFETIME = 3600  # 1 ชั่วโมง
 
 # ใช้ Session เพื่อเพิ่มประสิทธิภาพในการเชื่อมต่อ
 session = requests.Session()
@@ -77,14 +77,21 @@ def get_channels(portal_url, mac):
         return []
 
     channels = data.get("js", {}).get("data", [])
-    
-    # ถ้า channels เป็น list ของ list แปลงเป็น dict
+
     fixed_channels = []
     for ch in channels:
         if isinstance(ch, dict):
-            fixed_channels.append(ch)
+            fixed_channels.append({
+                "name": ch.get("name", "NoName"),
+                "cmd": ch.get("cmd", ""),
+                "logo": ch.get("logo", "")
+            })
         elif isinstance(ch, list) and len(ch) >= 2:
-            fixed_channels.append({"name": ch[0], "cmd": ch[1]})
+            fixed_channels.append({
+                "name": ch[0],
+                "cmd": ch[1],
+                "logo": ch[2] if len(ch) > 2 else ""
+            })
         else:
             print(f"Unexpected channel format: {ch}")
 
@@ -122,10 +129,12 @@ def playlist():
                     for ch in channels:
                         name = ch.get("name", "NoName")
                         url = get_stream_url(ch.get("cmd", ""))
+                        logo = ch.get("logo", "")
                         if url:
                             all_channels.append({
                                 "name": f"{name} ({mac})",
-                                "cmd": url
+                                "cmd": url,
+                                "logo": logo
                             })
                 except Exception as e:
                     print(f"Error fetching channels for {mac} @ {portal_url}: {e}")
@@ -133,7 +142,8 @@ def playlist():
         # สร้าง M3U
         output = "#EXTM3U\n"
         for ch in all_channels:
-            output += f"#EXTINF:-1,{ch['name']}\n{ch['cmd']}\n"
+            logo = ch.get("logo", "")
+            output += f'#EXTINF:-1 tvg-logo="{logo}",{ch["name"]}\n{ch["cmd"]}\n'
 
         return Response(output, mimetype="audio/x-mpegurl")
 
