@@ -3,15 +3,15 @@ import requests
 import time
 import json
 import os
-from threading import Lock
+from threading import Lock, Thread
 from urllib.parse import quote_plus
 import random
 
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 3600        # อายุ token (1 ชั่วโมง)
-TOKEN_REFRESH_INTERVAL = 3600 * 2  # รีเฟรช token ทุก 2 ชั่วโมง
+TOKEN_LIFETIME = 3600           # อายุ token (1 ชั่วโมง)
+TOKEN_REFRESH_INTERVAL = 3600*2 # รีเฟรช token ทุก 2 ชั่วโมง
 
 # -------------------------------
 # Session
@@ -79,12 +79,29 @@ def check_token(portal_url, mac):
     with token_lock:
         info = tokens.get(key)
         expired = not info or (now - info["time"]) > TOKEN_LIFETIME
-        refresh_needed = not info or (now - info["time"]) > TOKEN_REFRESH_INTERVAL
 
-    if expired or refresh_needed:
+    if expired:
         handshake(portal_url, mac)
 
     return tokens[key]["headers"]
+
+# -------------------------------
+# Background token refresher
+# -------------------------------
+def refresh_tokens_periodically():
+    while True:
+        time.sleep(TOKEN_REFRESH_INTERVAL)
+        with token_lock:
+            keys = list(tokens.keys())
+        for portal_url, mac in keys:
+            try:
+                print(f"Refreshing token for {mac} @ {portal_url}")
+                handshake(portal_url, mac)
+            except Exception as e:
+                print(f"Failed to refresh token for {mac} @ {portal_url}: {e}")
+
+# Start background refresher thread
+Thread(target=refresh_tokens_periodically, daemon=True).start()
 
 # -------------------------------
 # Portal GET / Stream
