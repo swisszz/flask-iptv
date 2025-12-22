@@ -58,32 +58,25 @@ def check_token(portal_url, mac):
 # --------------------------
 def get_active_mac(portal_url, mac_list):
     idx = mac_index.get(portal_url, 0)
-    mac = mac_list[idx]
-    try:
-        # ถ้า portal เป็น live.php, จะไม่ทำ handshake
-        if "live.php" not in portal_url:
-            check_token(portal_url, mac)
-        return mac
-    except:
-        print(f"[MAC expired] {mac} for {portal_url}")
-        idx = (idx + 1) % len(mac_list)
-        mac_index[portal_url] = idx
+    for _ in range(len(mac_list)):
         mac = mac_list[idx]
         try:
             if "live.php" not in portal_url:
                 check_token(portal_url, mac)
+            mac_index[portal_url] = idx
             return mac
         except:
-            print(f"[MAC failed] {mac} for {portal_url}")
-            return None
+            print(f"[MAC expired] {mac} for {portal_url}")
+            idx = (idx + 1) % len(mac_list)
+    print(f"[MAC Error] No valid MAC for {portal_url}")
+    return None
 
 # --------------------------
 # Channels
 # --------------------------
 def get_channels(portal_url, mac):
     if "live.php" in portal_url:
-        # สำหรับ live.php, ดึง channel แบบง่ายๆ
-        # สมมติว่าต้องมี stream id list ในอนาคต
+        # สำหรับ live.php, ใช้ URL เดียวเป็น channel
         return [{"name": "Live Channel", "cmd": portal_url}]
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
@@ -179,7 +172,6 @@ def play():
         return Response("Invalid stream cmd", status=400)
 
     try:
-        # สำหรับ live.php, ไม่ต้อง handshake
         if "live.php" in stream_url:
             headers = {"User-Agent": "Mozilla/5.0"}
         else:
@@ -187,6 +179,24 @@ def play():
 
         upstream = session.get(stream_url, headers=headers, stream=True, timeout=30)
         if upstream.status_code != 200:
+            # สลับ MAC ถัดไป
+            with open(MACLIST_FILE, "r", encoding="utf-8") as f:
+                maclist_data = json.load(f)
+            macs = maclist_data.get(portal_url, [])
+            idx = macs.index(mac) if mac in macs else 0
+            for _ in range(len(macs)):
+                idx = (idx + 1) % len(macs)
+                next_mac = macs[idx]
+                try:
+                    if "live.php" not in portal_url:
+                        check_token(portal_url, next_mac)
+                    # อัพเดต index
+                    mac_index[portal_url] = idx
+                    # ส่ง redirect ให้ client เล่น MAC ใหม่
+                    redirect_url = f"http://{request.host}/play?portal={quote_plus(portal_url)}&mac={next_mac}&cmd={quote_plus(cmd)}"
+                    return Response(f"Switching to new MAC: {next_mac}\nRedirect: {redirect_url}", status=500)
+                except:
+                    continue
             return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
 
         def generate():
