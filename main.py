@@ -132,5 +132,10 @@ def play():
 def home():
     return "Live TV Proxy running!"
 
+import os
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000, threaded=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, threaded=True)
+
+
