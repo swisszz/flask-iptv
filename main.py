@@ -60,16 +60,18 @@ def get_active_mac(portal_url, mac_list):
     idx = mac_index.get(portal_url, 0)
     mac = mac_list[idx]
     try:
-        check_token(portal_url, mac)
+        # ถ้า portal เป็น live.php, จะไม่ทำ handshake
+        if "live.php" not in portal_url:
+            check_token(portal_url, mac)
         return mac
     except:
         print(f"[MAC expired] {mac} for {portal_url}")
-        # สลับไป MAC ถัดไป
         idx = (idx + 1) % len(mac_list)
         mac_index[portal_url] = idx
         mac = mac_list[idx]
         try:
-            check_token(portal_url, mac)
+            if "live.php" not in portal_url:
+                check_token(portal_url, mac)
             return mac
         except:
             print(f"[MAC failed] {mac} for {portal_url}")
@@ -79,6 +81,10 @@ def get_active_mac(portal_url, mac_list):
 # Channels
 # --------------------------
 def get_channels(portal_url, mac):
+    if "live.php" in portal_url:
+        # สำหรับ live.php, ดึง channel แบบง่ายๆ
+        # สมมติว่าต้องมี stream id list ในอนาคต
+        return [{"name": "Live Channel", "cmd": portal_url}]
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
     try:
@@ -148,7 +154,7 @@ def playlist():
             host = request.host
             play_url = (
                 f"http://{host}/play"
-                f"?portal={quote_plus(portal_url)}"
+                f"?portal={quote_plus(url)}"
                 f"&mac={mac}"
                 f"&cmd={quote_plus(ch.get('cmd',''))}"
             )
@@ -173,10 +179,13 @@ def play():
         return Response("Invalid stream cmd", status=400)
 
     try:
-        headers = check_token(portal_url, mac)
-        print(f"[Streaming] URL: {stream_url} MAC: {mac}")
+        # สำหรับ live.php, ไม่ต้อง handshake
+        if "live.php" in stream_url:
+            headers = {"User-Agent": "Mozilla/5.0"}
+        else:
+            headers = check_token(portal_url, mac)
+
         upstream = session.get(stream_url, headers=headers, stream=True, timeout=30)
-        print(f"[Upstream] status: {upstream.status_code}")
         if upstream.status_code != 200:
             return Response(f"Upstream error {upstream.status_code}", status=upstream.status_code)
 
