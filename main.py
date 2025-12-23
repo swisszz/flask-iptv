@@ -181,7 +181,7 @@ def play():
                     stream,
                     headers=headers,
                     stream=True,
-                    timeout=(5, 15)
+                    timeout=(5, 10)
                 ) as r:
                     if r.status_code != 200:
                         break
@@ -206,4 +206,5 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
