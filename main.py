@@ -1,11 +1,11 @@
-from flask import Flask, Response, request, stream_with_context
+from flask import Flask, Response, request
 import requests, time, json
 from urllib.parse import quote_plus
 
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 120  # อายุ token (วินาที)
+TOKEN_LIFETIME = 120  # ลดอายุ token (สำคัญ)
 
 tokens = {}
 mac_index = {}
@@ -108,6 +108,7 @@ def get_channels(portal_url, mac):
         headers=headers,
         timeout=10
     )
+
     data = r.json().get("js", {}).get("data", [])
     out = []
 
@@ -171,21 +172,32 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
-    headers = check_token(portal, mac)
+    try:
+        headers = check_token(portal, mac)
+    except Exception as e:
+        app.logger.error(f"Token error: {e}")
+        return Response("Token error", status=500)
 
-    @stream_with_context
     def generate():
         while True:
             try:
-                with requests.get(stream, headers=headers, stream=True, timeout=(5, None)) as r:
+                with requests.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
                     if r.status_code != 200:
+                        app.logger.error(f"Upstream status {r.status_code}")
                         break
-                    for chunk in r.iter_content(chunk_size=8192):
+
+                    buffer = []
+                    for chunk in r.iter_content(chunk_size=188*7):
                         if chunk:
-                            yield chunk
-            except requests.exceptions.RequestException:
+                            buffer.append(chunk)
+                        if len(buffer) >= 10:  # ส่งทีละ 10 chunk
+                            yield b"".join(buffer)
+                            buffer = []
+                    if buffer:
+                        yield b"".join(buffer)
+            except Exception as e:
+                app.logger.error(f"Stream error: {e}")
                 time.sleep(1)
-                headers = check_token(portal, mac)
 
     return Response(generate(), content_type="video/mp2t")
 
