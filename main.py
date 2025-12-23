@@ -148,7 +148,7 @@ def playlist():
                 continue
 
             play_url = (
-                f"http://{request.host}/play"
+                f"http://{request.host}/play.m3u8"
                 f"?portal={quote_plus(portal)}"
                 f"&mac={mac}"
                 f"&cmd={quote_plus(stream)}"
@@ -166,8 +166,22 @@ def playlist():
 
     return Response(out, mimetype="audio/x-mpegurl")
 
+@app.route("/play.m3u8")
+def play_m3u8():
+    portal = request.args.get("portal")
+    mac = request.args.get("mac")
+    stream = request.args.get("cmd")
+
+    headers = check_token(portal, mac)
+
+    # ส่ง HLS playlist โดยตรงถ้า URL เป็น .m3u8
+    r = requests.get(stream, headers=headers, timeout=10)
+    r.raise_for_status()
+
+    return Response(r.text, mimetype="application/vnd.apple.mpegurl")
+
 @app.route("/play")
-def play():
+def play_ts():
     portal = request.args.get("portal")
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
@@ -181,29 +195,22 @@ def play():
                     stream,
                     headers=headers,
                     stream=True,
-                    timeout=(5, 10)  # เพิ่ม timeout read
+                    timeout=(5, 10)
                 ) as r:
                     if r.status_code != 200:
                         break
 
-                    # ใช้ chunk ขนาดเล็กเพื่อให้ player ไม่ค้าง
                     for chunk in r.iter_content(chunk_size=188*2):
                         if chunk:
                             yield chunk
             except requests.exceptions.RequestException:
-                time.sleep(0.5)  # reconnect เร็วขึ้น
+                time.sleep(0.5)
 
-    return Response(
-        generate(),
-        content_type="video/mp2t"
-    )
+    return Response(generate(), content_type="video/mp2t")
 
 @app.route("/")
 def home():
     return "Live TV Proxy running"
 
-# --------------------------
-# Run
-# --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
