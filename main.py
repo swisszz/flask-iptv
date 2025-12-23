@@ -1,11 +1,11 @@
-from flask import Flask, Response, request
+from flask import Flask, Response, request, stream_with_context
 import requests, time, json
 from urllib.parse import quote_plus
 
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 120   # ลดอายุ token (สำคัญ)
+TOKEN_LIFETIME = 120  # อายุ token (วินาที)
 
 tokens = {}
 mac_index = {}
@@ -108,7 +108,6 @@ def get_channels(portal_url, mac):
         headers=headers,
         timeout=10
     )
-
     data = r.json().get("js", {}).get("data", [])
     out = []
 
@@ -174,28 +173,21 @@ def play():
 
     headers = check_token(portal, mac)
 
+    @stream_with_context
     def generate():
         while True:
             try:
-                with requests.get(
-                    stream,
-                    headers=headers,
-                    stream=True,
-                    timeout=(5, None)
-                ) as r:
+                with requests.get(stream, headers=headers, stream=True, timeout=(5, None)) as r:
                     if r.status_code != 200:
                         break
-
-                    for chunk in r.iter_content(chunk_size=188 * 7):
+                    for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             yield chunk
-            except:
-                time.sleep(1)  # reconnect
+            except requests.exceptions.RequestException:
+                time.sleep(1)
+                headers = check_token(portal, mac)
 
-    return Response(
-        generate(),
-        content_type="video/mp2t"
-    )
+    return Response(generate(), content_type="video/mp2t")
 
 @app.route("/")
 def home():
