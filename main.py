@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 120  # ลดอายุ token (สำคัญ)
+TOKEN_LIFETIME = 120   # ลดอายุ token (สำคัญ)
 
 tokens = {}
 mac_index = {}
@@ -172,34 +172,31 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
-    try:
-        headers = check_token(portal, mac)
-    except Exception as e:
-        app.logger.error(f"Token error: {e}")
-        return Response("Token error", status=500)
+    headers = check_token(portal, mac)
 
     def generate():
         while True:
             try:
-                with requests.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
+                with requests.get(
+                    stream,
+                    headers=headers,
+                    stream=True,
+                    timeout=(5, 10)  # เพิ่ม timeout read
+                ) as r:
                     if r.status_code != 200:
-                        app.logger.error(f"Upstream status {r.status_code}")
                         break
 
-                    buffer = []
-                    for chunk in r.iter_content(chunk_size=188*7):
+                    # ใช้ chunk ขนาดเล็กเพื่อให้ player ไม่ค้าง
+                    for chunk in r.iter_content(chunk_size=188*2):
                         if chunk:
-                            buffer.append(chunk)
-                        if len(buffer) >= 10:  # ส่งทีละ 10 chunk
-                            yield b"".join(buffer)
-                            buffer = []
-                    if buffer:
-                        yield b"".join(buffer)
-            except Exception as e:
-                app.logger.error(f"Stream error: {e}")
-                time.sleep(1)
+                            yield chunk
+            except requests.exceptions.RequestException:
+                time.sleep(0.5)  # reconnect เร็วขึ้น
 
-    return Response(generate(), content_type="video/mp2t")
+    return Response(
+        generate(),
+        content_type="video/mp2t"
+    )
 
 @app.route("/")
 def home():
