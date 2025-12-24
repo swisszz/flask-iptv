@@ -175,27 +175,39 @@ def play():
     headers = check_token(portal, mac)
 
     def generate():
+        last_token_check = 0
+
         while True:
             try:
+                # refresh token ทุก 60 วินาที
+                if time.time() - last_token_check > 60:
+                    headers = check_token(portal, mac)
+                    last_token_check = time.time()
+
                 with requests.get(
                     stream,
                     headers=headers,
                     stream=True,
-                    timeout=(5, 10)
+                    timeout=(5, None)
                 ) as r:
-                    if r.status_code != 200:
-                        break
-
-                    for chunk in r.iter_content(chunk_size=188 * 7):
+                    for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             yield chunk
-            except:
-                time.sleep(1)  # reconnect
+
+            except Exception:
+                time.sleep(0.1)
+                continue
 
     return Response(
         generate(),
-        content_type="video/mp2t"
+        content_type="video/mp2t",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
     )
+
+
 
 @app.route("/")
 def home():
@@ -206,5 +218,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
-
 
