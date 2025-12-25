@@ -123,11 +123,17 @@ def get_channels(portal_url, mac):
 def extract_stream(cmd):
     if not cmd:
         return None
+
+    # ⭐ ตรงนี้คือจุดสำคัญ
+    if is_direct_url(cmd):
+        return cmd
+
     cmd = cmd.replace("ffmpeg", "")
     for p in cmd.split():
         if p.startswith(("http://", "https://")):
             return p
     return None
+
 
 # --------------------------
 # Routes
@@ -220,5 +226,6 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
