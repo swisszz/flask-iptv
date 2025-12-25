@@ -204,9 +204,8 @@ def play():
                         if chunk:
                             yield chunk
 
-                    # ⭐ stream จบเอง → reconnect ใหม่
-                    time.sleep(0.2)
-                    continue
+                # stream จบเอง → reconnect ใหม่
+                time.sleep(0.2)
 
             except Exception:
                 # error ใด ๆ → reconnect ใหม่
@@ -225,6 +224,7 @@ def play():
 
 
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -234,6 +234,7 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
 
