@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 3600  #swisszzchek
+TOKEN_LIFETIME = 3600  # อายุ token 1 ชั่วโมง
 
 tokens = {}
 mac_index = {}
@@ -172,11 +172,12 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
-    last_token_check = 0
+    headers = check_token(portal, mac)
+    last_token_check = time.time()
 
     def generate():
-        nonlocal last_token_check
-        session = requests.Session()  # ใช้ session เดียวทั้ง stream
+        nonlocal headers, last_token_check
+        session = requests.Session()  # ใช้ session เดียวตลอด stream
         while True:
             try:
                 # Refresh token ทุก 60 วินาที (เฉพาะ portal)
@@ -186,12 +187,11 @@ def play():
                 elif is_direct_url(stream):
                     headers = {"User-Agent": "Mozilla/5.0"}
 
-                # request stream
                 with session.get(
                     stream,
                     headers=headers,
                     stream=True,
-                    timeout=(5, 10),  # connect timeout 5s, read timeout 10s
+                    timeout=(5, 30),  # connect 5s, read 30s
                     allow_redirects=True
                 ) as r:
                     r.raise_for_status()
@@ -199,15 +199,15 @@ def play():
                         if chunk:
                             yield chunk
 
-                # ถ้า stream จบเอง → reconnect
+                # ถ้า stream จบ → reconnect
                 time.sleep(0.1)
 
-            except requests.exceptions.RequestException:
-                # network error → reconnect
+            except requests.exceptions.RequestException as e:
+                print(f"[Network Error] reconnecting: {e}")
                 time.sleep(0.5)
                 continue
-            except Exception:
-                # อื่น ๆ → reconnect
+            except Exception as e:
+                print(f"[Other Error] reconnecting: {e}")
                 time.sleep(0.5)
                 continue
 
@@ -220,9 +220,6 @@ def play():
         }
     )
 
-
-
-
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -232,5 +229,3 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
-
-
