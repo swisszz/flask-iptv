@@ -203,8 +203,8 @@ def play():
 
             except Exception:
                 # ถ้า request  retry
-                time.sleep(0.2)
-                break
+                time.sleep(0.5)
+              continue
 
     return Response(
         generate(),
@@ -226,6 +226,7 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
 
