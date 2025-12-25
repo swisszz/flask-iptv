@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 600  #swisszzchek
+TOKEN_LIFETIME = 3600  #swisszzchek
 
 tokens = {}
 mac_index = {}
@@ -218,5 +218,6 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
