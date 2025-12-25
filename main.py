@@ -14,27 +14,23 @@ USER_AGENT = "Mozilla/5.0"
 # Utils
 # --------------------------
 def is_direct_url(url):
-    """เช็คว่าเป็น direct URL หรือไม่"""
     if not url:
         return False
     u = url.lower()
     return "live.php" in u or "/ch/" in u or "localhost" in u
 
 def get_channel_id(name, mac):
-    """สร้าง tvg-id จากชื่อช่องและ MAC"""
     safe_name = "".join(c for c in name if c.isalnum())
     mac_clean = mac.replace(":", "")
     return f"{safe_name}_{mac_clean}"
 
 def get_channel_logo(channel, portal):
-    """ได้ logo แบบ full URL"""
     logo = channel.get("logo") or channel.get("icon") or ""
     if logo and not logo.startswith("http"):
         logo = portal.rstrip("/") + "/" + logo.lstrip("/")
     return logo
 
 def extract_stream(cmd):
-    """ดึง URL จาก command"""
     if not cmd:
         return None
     cmd = cmd.replace("ffmpeg", "")
@@ -43,14 +39,9 @@ def extract_stream(cmd):
             return p
     return None
 
-# --------------------------
-# Channels
-# --------------------------
 def get_channels(portal_url, mac):
-    """ดึงช่องจาก portal หรือ direct URL"""
     if is_direct_url(portal_url):
         return [{"name": "Live Stream", "cmd": portal_url}]
-
     try:
         headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
         url = f"{portal_url}/server/load.php"
@@ -60,6 +51,7 @@ def get_channels(portal_url, mac):
             headers=headers,
             timeout=10
         )
+        r.raise_for_status()
         data = r.json().get("js", {}).get("data", [])
         channels = []
         for ch in data:
@@ -82,7 +74,6 @@ def playlist():
         return "MAC list not found", 500
 
     out = "#EXTM3U\n"
-
     for portal, macs in data.items():
         mac = macs[0] if macs else ""
         for ch in get_channels(portal, mac):
@@ -129,7 +120,6 @@ def play():
                 if chunk:
                     yield chunk
         except GeneratorExit:
-            # client ปิด connection → จบ generator
             pass
         except:
             pass
@@ -144,7 +134,8 @@ def home():
     return "Live TV Proxy running"
 
 # --------------------------
-# Run
+# Run via Gunicorn
 # --------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80)
+    # สำหรับทดสอบ local
+    app.run(host="0.0.0.0", port=5000)
