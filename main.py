@@ -84,7 +84,6 @@ def check_token(portal_url, mac):
 # --------------------------
 def get_active_mac(portal_url, macs):
     idx = mac_index.get(portal_url, 0)
-
     for _ in range(len(macs)):
         mac = macs[idx]
         try:
@@ -93,7 +92,6 @@ def get_active_mac(portal_url, macs):
             return mac
         except:
             idx = (idx + 1) % len(macs)
-
     return None
 
 # --------------------------
@@ -105,7 +103,6 @@ def get_channels(portal_url, mac):
 
     headers = check_token(portal_url, mac)
     url = f"{portal_url}/server/load.php"
-
     r = requests.get(
         url,
         params={"type": "itv", "action": "get_all_channels"},
@@ -113,28 +110,47 @@ def get_channels(portal_url, mac):
         timeout=10
     )
     r.raise_for_status()
-
     data = r.json().get("js", {}).get("data", [])
     channels = []
-
     for ch in data:
         if isinstance(ch, dict):
             channels.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             channels.append({"name": ch[0], "cmd": ch[1]})
-
     return channels
 
 def extract_stream(cmd):
     if not cmd:
         return None
-
     cmd = cmd.replace("ffmpeg", "")
     for p in cmd.split():
         if p.startswith(("http://", "https://")):
             return p
-
     return None
+
+# --------------------------
+# 🔑 create_link สำหรับ play_token
+# --------------------------
+def create_link(portal_url, mac, cmd):
+    headers = check_token(portal_url, mac)
+    url = f"{portal_url}/server/load.php"
+    r = requests.get(
+        url,
+        params={
+            "type": "itv",
+            "action": "create_link",
+            "cmd": cmd,
+            "forced_storage": 0
+        },
+        headers=headers,
+        timeout=10
+    )
+    r.raise_for_status()
+    js = r.json().get("js", {})
+    stream_cmd = js.get("cmd")
+    if not stream_cmd:
+        raise Exception("create_link failed")
+    return extract_stream(stream_cmd)
 
 # --------------------------
 # Routes
@@ -148,81 +164,73 @@ def playlist():
         return "MAC list not found", 500
 
     out = "#EXTM3U\n"
-
     for portal, macs in data.items():
         mac = get_active_mac(portal, macs)
         if not mac:
             continue
-
         for ch in get_channels(portal, mac):
-            stream = extract_stream(ch.get("cmd"))
-            if not stream:
+            cmd = ch.get("cmd")
+            if not cmd:
                 continue
-
             play_url = (
                 f"http://{request.host}/play"
                 f"?portal={quote_plus(portal)}"
                 f"&mac={mac}"
-                f"&cmd={quote_plus(stream)}"
+                f"&cmd={quote_plus(cmd)}"
             )
-
             name = ch.get("name", "Live")
             tvg_id = get_channel_id(name, mac)
             tvg_logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{tvg_logo}"' if tvg_logo else ""
-
             out += (
                 f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}"'
                 f'{logo_attr} group-title="Live TV",{name}\n'
                 f'{play_url}\n'
             )
-
     return Response(out, mimetype="audio/x-mpegurl")
 
 @app.route("/play")
 def play():
     portal = request.args.get("portal")
     mac = request.args.get("mac")
-    stream = request.args.get("cmd")
+    cmd = request.args.get("cmd")
 
-    if not stream:
-        return "No stream URL", 400
+    def generate():
+        session = requests.Session()
+        try:
+            if not is_direct_url(cmd):
+                # generate link ใหม่ต่อช่องเพื่อได้ play_token
+                try:
+                    stream_url = create_link(portal, mac, cmd)
+                    if not stream_url:
+                        raise Exception("empty stream from create_link")
+                except Exception as e:
+                    print("[WARN] create_link failed, fallback to cmd:", e)
+                    stream_url = extract_stream(cmd) or cmd
+            else:
+                stream_url = cmd
 
-    session = requests.Session()
-
-    try:
-        # ใช้ token ต่อช่อง ถ้าไม่ใช่ direct URL
-        if not is_direct_url(stream):
-            headers = check_token(portal, mac)
-        else:
             headers = {"User-Agent": USER_AGENT}
 
-        with session.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
-            r.raise_for_status()
+            with session.get(stream_url, headers=headers, stream=True, timeout=(5, 30)) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
+        except Exception as e:
+            print("[PLAY ERROR]", e)
+            return
 
-            def generate():
-                try:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
-                except GeneratorExit:
-                    pass
-                except Exception as e:
-                    print("[PLAY ERROR]", e)
-
-            return Response(
-                generate(),
-                content_type="video/mp2t",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive"
-                }
-            )
-
-    except requests.exceptions.RequestException as e:
-        return f"Stream error: {e}", 500
-    except Exception as e:
-        return f"Other error: {e}", 500
+    # HLS manifest content type สำหรับ .m3u8
+    content_type = "application/vnd.apple.mpegurl" if stream_url.endswith(".m3u8") else "video/mp2t"
+    return Response(
+        generate(),
+        content_type=content_type,
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )
 
 @app.route("/")
 def home():
