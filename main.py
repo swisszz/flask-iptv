@@ -172,14 +172,15 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
+    # ดึง headers เริ่มต้น
     headers = check_token(portal, mac)
+    last_token_check = time.time()
 
     def generate():
-        last_token_check = 0
-
+        nonlocal headers, last_token_check  # swisszzchek
         while True:
             try:
-                # refresh token ทุก 60 วินาที
+                # Refresh token 
                 if time.time() - last_token_check > 60:
                     headers = check_token(portal, mac)
                     last_token_check = time.time()
@@ -195,6 +196,7 @@ def play():
                             yield chunk
 
             except Exception:
+                # ถ้า request  retry
                 time.sleep(0.1)
                 continue
 
@@ -218,6 +220,5 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
-
 
 
