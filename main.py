@@ -14,10 +14,7 @@ mac_index = {}
 # Utils
 # --------------------------
 def is_direct_url(url):
-    if not url:
-        return False
-    u = url.lower()
-    return "live.php" in u or "/ch/" in u or "localhost" in u
+    return url and ("live.php" in url.lower() or "/ch/" in url.lower() or "localhost" in url.lower())
 
 def get_channel_id(name, mac):
     safe_name = "".join(c for c in name if c.isalnum())
@@ -26,11 +23,9 @@ def get_channel_id(name, mac):
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or channel.get("logo_url")
-    if logo:
-        if not logo.startswith("http"):
-            logo = portal.rstrip("/") + "/" + logo.lstrip("/")
-        return logo
-    return ""
+    if logo and not logo.startswith("http"):
+        logo = portal.rstrip("/") + "/" + logo.lstrip("/")
+    return logo or ""
 
 # --------------------------
 # Handshake / Token
@@ -38,7 +33,6 @@ def get_channel_logo(channel, portal):
 def handshake(portal_url, mac):
     if is_direct_url(portal_url):
         return None
-
     url = f"{portal_url}/server/load.php"
     headers = {
         "Cookie": f"mac={mac}; stb_lang=en",
@@ -47,19 +41,11 @@ def handshake(portal_url, mac):
         "X-User-Device": "MAG254",
         "User-Agent": "Mozilla/5.0"
     }
-
-    r = requests.get(
-        url,
-        params={"type": "stb", "action": "handshake"},
-        headers=headers,
-        timeout=10
-    )
+    r = requests.get(url, params={"type":"stb","action":"handshake"}, headers=headers, timeout=10)
     r.raise_for_status()
-
     token = r.json().get("js", {}).get("token")
     if not token:
         raise Exception("No token")
-
     tokens[(portal_url, mac)] = {
         "time": time.time(),
         "headers": {**headers, "Authorization": f"Bearer {token}"}
@@ -68,11 +54,9 @@ def handshake(portal_url, mac):
 def check_token(portal_url, mac):
     if is_direct_url(portal_url):
         return {"User-Agent": "Mozilla/5.0"}
-
     key = (portal_url, mac)
     if key not in tokens or time.time() - tokens[key]["time"] > TOKEN_LIFETIME:
         handshake(portal_url, mac)
-
     return tokens[key]["headers"]
 
 # --------------------------
@@ -80,7 +64,6 @@ def check_token(portal_url, mac):
 # --------------------------
 def get_active_mac(portal_url, macs):
     idx = mac_index.get(portal_url, 0)
-
     for _ in range(len(macs)):
         mac = macs[idx]
         try:
@@ -89,7 +72,6 @@ def get_active_mac(portal_url, macs):
             return mac
         except:
             idx = (idx + 1) % len(macs)
-
     return None
 
 # --------------------------
@@ -97,35 +79,23 @@ def get_active_mac(portal_url, macs):
 # --------------------------
 def get_channels(portal_url, mac):
     if is_direct_url(portal_url):
-        return [{"name": "Live Stream", "cmd": portal_url}]
-
+        return [{"name":"Live Stream","cmd":portal_url}]
     headers = check_token(portal_url, mac)
-    url = f"{portal_url}/server/load.php"
-
-    r = requests.get(
-        url,
-        params={"type": "itv", "action": "get_all_channels"},
-        headers=headers,
-        timeout=10
-    )
-
+    r = requests.get(f"{portal_url}/server/load.php", params={"type":"itv","action":"get_all_channels"}, headers=headers, timeout=10)
     data = r.json().get("js", {}).get("data", [])
     out = []
-
     for ch in data:
         if isinstance(ch, dict):
             out.append(ch)
         elif isinstance(ch, list) and len(ch) >= 2:
             out.append({"name": ch[0], "cmd": ch[1]})
-
     return out
 
 def extract_stream(cmd):
-    if not cmd:
-        return None
-    cmd = cmd.replace("ffmpeg", "")
+    if not cmd: return None
+    cmd = cmd.replace("ffmpeg","")
     for p in cmd.split():
-        if p.startswith(("http://", "https://")):
+        if p.startswith(("http://","https://")):
             return p
     return None
 
@@ -136,34 +106,17 @@ def extract_stream(cmd):
 def playlist():
     data = json.load(open(MACLIST_FILE, encoding="utf-8"))
     out = "#EXTM3U\n"
-
     for portal, macs in data.items():
         mac = get_active_mac(portal, macs)
-        if not mac:
-            continue
-
+        if not mac: continue
         for ch in get_channels(portal, mac):
             stream = extract_stream(ch.get("cmd"))
-            if not stream:
-                continue
-
-            play_url = (
-                f"http://{request.host}/play"
-                f"?portal={quote_plus(portal)}"
-                f"&mac={mac}"
-                f"&cmd={quote_plus(stream)}"
-            )
-
-            tvg_id = get_channel_id(ch.get("name", "Live"), mac)
+            if not stream: continue
+            play_url = f"http://{request.host}/play?portal={quote_plus(portal)}&mac={mac}&cmd={quote_plus(stream)}"
+            tvg_id = get_channel_id(ch.get("name","Live"), mac)
             tvg_logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{tvg_logo}"' if tvg_logo else ""
-
-            out += (
-                f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{ch.get("name","Live")}"'
-                f'{logo_attr} group-title="Live TV",{ch.get("name","Live")}\n'
-                f'{play_url}\n'
-            )
-
+            out += f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{ch.get("name","Live")}"{logo_attr} group-title="Live TV",{ch.get("name","Live")}\n{play_url}\n'
     return Response(out, mimetype="audio/x-mpegurl")
 
 @app.route("/play")
@@ -171,54 +124,35 @@ def play():
     portal = request.args.get("portal")
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
-
-    headers = check_token(portal, mac)
     last_token_check = time.time()
 
     def generate():
-        nonlocal headers, last_token_check
-        session = requests.Session()  # ใช้ session เดียวตลอด stream
+        nonlocal last_token_check
+        session = requests.Session()
         while True:
             try:
-                # Refresh token ทุก 60 วินาที (เฉพาะ portal)
+                headers = check_token(portal, mac) if not is_direct_url(stream) else {"User-Agent":"Mozilla/5.0"}
+                # รีเฟรช token ทุก 60 วินาที
                 if not is_direct_url(stream) and time.time() - last_token_check > 60:
                     headers = check_token(portal, mac)
                     last_token_check = time.time()
-                elif is_direct_url(stream):
-                    headers = {"User-Agent": "Mozilla/5.0"}
 
-                with session.get(
-                    stream,
-                    headers=headers,
-                    stream=True,
-                    timeout=(5, 30),  # connect 5s, read 30s
-                    allow_redirects=True
-                ) as r:
+                with session.get(stream, headers=headers, stream=True, timeout=(5,20), allow_redirects=True) as r:
                     r.raise_for_status()
                     for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
-
-                # ถ้า stream จบ → reconnect
+                        if chunk: yield chunk
                 time.sleep(0.1)
-
-            except requests.exceptions.RequestException as e:
-                print(f"[Network Error] reconnecting: {e}")
+            except requests.exceptions.RequestException:
+                # log สั้น ๆ
+                print("[Network Error] reconnecting...")
                 time.sleep(0.5)
                 continue
-            except Exception as e:
-                print(f"[Other Error] reconnecting: {e}")
+            except Exception:
+                print("[Other Error] reconnecting...")
                 time.sleep(0.5)
                 continue
 
-    return Response(
-        generate(),
-        content_type="video/mp2t",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
-    )
+    return Response(generate(), content_type="video/mp2t", headers={"Cache-Control":"no-cache","Connection":"keep-alive"})
 
 @app.route("/")
 def home():
