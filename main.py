@@ -172,32 +172,43 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
-    # ดึง headers เริ่มต้น
-    headers = check_token(portal, mac)
-    last_token_check = time.time()
+    last_token_check = 0
 
     def generate():
-        nonlocal headers, last_token_check  # swisszzchek
+        nonlocal last_token_check
+        session = requests.Session()  # ใช้ session เดียวทั้ง stream
         while True:
             try:
-                # Refresh token 
-                if time.time() - last_token_check > 60:
+                # Refresh token ทุก 60 วินาที (เฉพาะ portal)
+                if not is_direct_url(stream) and time.time() - last_token_check > 60:
                     headers = check_token(portal, mac)
                     last_token_check = time.time()
+                elif is_direct_url(stream):
+                    headers = {"User-Agent": "Mozilla/5.0"}
 
-                with requests.get(
+                # request stream
+                with session.get(
                     stream,
                     headers=headers,
                     stream=True,
-                    timeout=(5, None)
+                    timeout=(5, 10),  # connect timeout 5s, read timeout 10s
+                    allow_redirects=True
                 ) as r:
+                    r.raise_for_status()
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             yield chunk
 
-            except Exception:
-                # ถ้า request  retry
+                # ถ้า stream จบเอง → reconnect
                 time.sleep(0.1)
+
+            except requests.exceptions.RequestException:
+                # network error → reconnect
+                time.sleep(0.5)
+                continue
+            except Exception:
+                # อื่น ๆ → reconnect
+                time.sleep(0.5)
                 continue
 
     return Response(
@@ -211,6 +222,7 @@ def play():
 
 
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -220,4 +232,5 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
