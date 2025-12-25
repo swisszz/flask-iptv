@@ -137,33 +137,6 @@ def extract_stream(cmd):
     return None
 
 # --------------------------
-# 🔑 create_link (เพิ่มใหม่)
-# --------------------------
-def create_link(portal_url, mac, cmd):
-    headers = check_token(portal_url, mac)
-    url = f"{portal_url}/server/load.php"
-
-    r = requests.get(
-        url,
-        params={
-            "type": "itv",
-            "action": "create_link",
-            "cmd": cmd,
-            "forced_storage": 0
-        },
-        headers=headers,
-        timeout=10
-    )
-    r.raise_for_status()
-
-    js = r.json().get("js", {})
-    stream_cmd = js.get("cmd")
-    if not stream_cmd:
-        raise Exception("create_link failed")
-
-    return extract_stream(stream_cmd)
-
-# --------------------------
 # Routes
 # --------------------------
 @app.route("/playlist.m3u")
@@ -182,15 +155,15 @@ def playlist():
             continue
 
         for ch in get_channels(portal, mac):
-            cmd = ch.get("cmd")
-            if not cmd:
+            stream = extract_stream(ch.get("cmd"))
+            if not stream:
                 continue
 
             play_url = (
                 f"http://{request.host}/play"
                 f"?portal={quote_plus(portal)}"
                 f"&mac={mac}"
-                f"&cmd={quote_plus(cmd)}"
+                f"&cmd={quote_plus(stream)}"
             )
 
             name = ch.get("name", "Live")
@@ -210,46 +183,46 @@ def playlist():
 def play():
     portal = request.args.get("portal")
     mac = request.args.get("mac")
-    cmd = request.args.get("cmd")
+    stream = request.args.get("cmd")
 
-    def generate():
-        session = requests.Session()
+    if not stream:
+        return "No stream URL", 400
 
-        try:
-            # ถ้าไม่ใช่ direct → พยายาม create_link
-            if not is_direct_url(cmd):
-                try:
-                    stream = create_link(portal, mac, cmd)
-                    if not stream:
-                        raise Exception("empty stream from create_link")
-                except Exception as e:
-                    # fallback ใช้ cmd เดิม
-                    print("[WARN] create_link failed, fallback to cmd:", e)
-                    stream = extract_stream(cmd) or cmd
-            else:
-                stream = cmd
+    session = requests.Session()
 
+    try:
+        # ใช้ token ต่อช่อง ถ้าไม่ใช่ direct URL
+        if not is_direct_url(stream):
+            headers = check_token(portal, mac)
+        else:
             headers = {"User-Agent": USER_AGENT}
 
-            with session.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        yield chunk
+        with session.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
+            r.raise_for_status()
 
-        except Exception as e:
-            print("[PLAY ERROR]", e)
-            return
+            def generate():
+                try:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            yield chunk
+                except GeneratorExit:
+                    pass
+                except Exception as e:
+                    print("[PLAY ERROR]", e)
 
-    return Response(
-        generate(),
-        content_type="video/mp2t",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
-    )
+            return Response(
+                generate(),
+                content_type="video/mp2t",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive"
+                }
+            )
 
+    except requests.exceptions.RequestException as e:
+        return f"Stream error: {e}", 500
+    except Exception as e:
+        return f"Other error: {e}", 500
 
 @app.route("/")
 def home():
@@ -260,4 +233,3 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
