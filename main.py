@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 3600  #swisszzchek
+TOKEN_LIFETIME = 3600  # swisszzchek
 
 tokens = {}
 mac_index = {}
@@ -124,7 +124,6 @@ def extract_stream(cmd):
     if not cmd:
         return None
 
-    # ⭐ ตรงนี้คือจุดสำคัญ
     if is_direct_url(cmd):
         return cmd
 
@@ -133,7 +132,6 @@ def extract_stream(cmd):
         if p.startswith(("http://", "https://")):
             return p
     return None
-
 
 # --------------------------
 # Routes
@@ -221,10 +219,6 @@ def play():
         }
     )
 
-
-
-
-
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -234,12 +228,3 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
-
-
-
-
-
-
-
-
-
