@@ -205,7 +205,7 @@ def play():
                     if chunk:
                         yield chunk
 
-                # ⭐ server ตัด stream → reconnect ใหม่
+                # ⭐ stream จบเอง → reconnect ใหม่
                 time.sleep(0.2)
                 continue
 
@@ -213,6 +213,7 @@ def play():
             # error ใด ๆ → reconnect ใหม่
             time.sleep(0.5)
             continue
+
 
 
     return Response(
@@ -235,6 +236,7 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
 
