@@ -1,5 +1,5 @@
 from flask import Flask, Response, request
-import requests, time, json
+import requests, json
 from urllib.parse import quote_plus
 
 app = Flask(__name__)
@@ -106,40 +106,36 @@ def play():
     if not stream:
         return "No stream URL", 400
 
-    def generate():
-        session = requests.Session()
-        while True:
-            try:
-                headers = {"User-Agent": USER_AGENT}
-                with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
-                    r.raise_for_status()
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
-                # ถ้า stream หลุด รีคอนเน็กใหม่
-                time.sleep(0.1)
-            except requests.exceptions.RequestException:
-                time.sleep(0.5)
-                continue
-            except Exception:
-                time.sleep(0.5)
-                continue
+    headers = {"User-Agent": USER_AGENT}
 
-    return Response(
-        generate(),
-        content_type="video/mp2t",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
-    )
+    try:
+        r = requests.get(stream, headers=headers, stream=True, timeout=(5, 30))
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        return f"Stream error: {e}", 500
+
+    def generate():
+        try:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        except GeneratorExit:
+            pass
+        except:
+            pass
+
+    return Response(generate(), content_type="video/mp2t", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive"
+    })
 
 @app.route("/")
 def home():
     return "Live TV Proxy running"
 
 # --------------------------
-# Run locally
+# Run via Gunicorn
 # --------------------------
 if __name__ == "__main__":
+    # สำหรับทดสอบ local
     app.run(host="0.0.0.0", port=5000)
