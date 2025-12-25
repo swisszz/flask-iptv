@@ -183,28 +183,37 @@ def play():
     last_token_check = time.time()
 
     def generate():
-        nonlocal headers, last_token_check  # swisszzchek
-        while True:
-            try:
-                # Refresh token 
+    nonlocal headers, last_token_check
+    while True:
+        try:
+            # refresh token เฉพาะ portal (ไม่ใช่ direct)
+            if not is_direct_url(stream):
                 if time.time() - last_token_check > 60:
                     headers = check_token(portal, mac)
                     last_token_check = time.time()
 
-                with requests.get(
-                    stream,
-                    headers=headers,
-                    stream=True,
-                    timeout=(5, None)
-                ) as r:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
+            with requests.get(
+                stream,
+                headers=headers,
+                stream=True,
+                timeout=(5, None),
+                allow_redirects=True
+            ) as r:
+                r.raise_for_status()
 
-            except Exception:
-                # ถ้า request  retry
-                time.sleep(0.5)
-              continue
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
+
+                # ⭐ server ตัด stream → reconnect ใหม่
+                time.sleep(0.2)
+                continue
+
+        except Exception:
+            # error ใด ๆ → reconnect ใหม่
+            time.sleep(0.5)
+            continue
+
 
     return Response(
         generate(),
@@ -226,6 +235,7 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
 
