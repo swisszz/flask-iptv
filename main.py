@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 app = Flask(__name__)
 
 MACLIST_FILE = "maclist.json"
-TOKEN_LIFETIME = 3600  # swisszzchek
+TOKEN_LIFETIME = 3600  #swisszzchek
 
 tokens = {}
 mac_index = {}
@@ -123,10 +123,6 @@ def get_channels(portal_url, mac):
 def extract_stream(cmd):
     if not cmd:
         return None
-
-    if is_direct_url(cmd):
-        return cmd
-
     cmd = cmd.replace("ffmpeg", "")
     for p in cmd.split():
         if p.startswith(("http://", "https://")):
@@ -176,53 +172,32 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
+    # ดึง headers เริ่มต้น
+    headers = check_token(portal, mac)
     last_token_check = time.time()
 
-    # กำหนด headers เริ่มต้น
-    if is_direct_url(stream):
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-        }
-    else:
-        headers = check_token(portal, mac)
-
     def generate():
-        nonlocal headers, last_token_check
+        nonlocal headers, last_token_check  # swisszzchek
         while True:
             try:
-                # refresh token เฉพาะ portal ปกติ
-                if not is_direct_url(stream) and time.time() - last_token_check > 60:
+                # Refresh token 
+                if time.time() - last_token_check > 60:
                     headers = check_token(portal, mac)
                     last_token_check = time.time()
-
-                # สำหรับ direct URL บางแห่ง อาจต้องส่ง Cookie หรือ play_token จาก query string
-                cookies = {}
-                if "play_token=" in stream:
-                    # ดึง play_token จาก query string
-                    from urllib.parse import urlparse, parse_qs
-                    query = parse_qs(urlparse(stream).query)
-                    token = query.get("play_token", [None])[0]
-                    if token:
-                        cookies["play_token"] = token
 
                 with requests.get(
                     stream,
                     headers=headers,
-                    cookies=cookies,
                     stream=True,
-                    timeout=(5, None),
-                    allow_redirects=True
+                    timeout=(5, None)
                 ) as r:
-                    r.raise_for_status()
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             yield chunk
 
-                time.sleep(0.2)
-
             except Exception:
-                # reconnect ใหม่ ถ้า error
-                time.sleep(0.5)
+                # ถ้า request  retry
+                time.sleep(0.1)
                 continue
 
     return Response(
@@ -233,6 +208,8 @@ def play():
             "Connection": "keep-alive"
         }
     )
+
+
 
 @app.route("/")
 def home():
