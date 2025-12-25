@@ -215,19 +215,31 @@ def play():
     def generate():
         session = requests.Session()
 
-        # 🔥 สร้าง stream ใหม่ "ต่อช่อง"
-        if not is_direct_url(cmd):
-            stream = create_link(portal, mac, cmd)
-            headers = {"User-Agent": USER_AGENT}
-        else:
-            stream = cmd
+        try:
+            # ถ้าไม่ใช่ direct → พยายาม create_link
+            if not is_direct_url(cmd):
+                try:
+                    stream = create_link(portal, mac, cmd)
+                    if not stream:
+                        raise Exception("empty stream from create_link")
+                except Exception as e:
+                    # fallback ใช้ cmd เดิม
+                    print("[WARN] create_link failed, fallback to cmd:", e)
+                    stream = extract_stream(cmd) or cmd
+            else:
+                stream = cmd
+
             headers = {"User-Agent": USER_AGENT}
 
-        with session.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
-            r.raise_for_status()
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
+            with session.get(stream, headers=headers, stream=True, timeout=(5, 30)) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
+
+        except Exception as e:
+            print("[PLAY ERROR]", e)
+            return
 
     return Response(
         generate(),
@@ -238,6 +250,7 @@ def play():
         }
     )
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -247,3 +260,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
