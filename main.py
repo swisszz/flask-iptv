@@ -178,43 +178,40 @@ def play():
     mac = request.args.get("mac")
     stream = request.args.get("cmd")
 
-    # ดึง headers เริ่มต้น
     headers = check_token(portal, mac)
     last_token_check = time.time()
 
     def generate():
-    nonlocal headers, last_token_check
-    while True:
-        try:
-            # refresh token เฉพาะ portal (ไม่ใช่ direct)
-            if not is_direct_url(stream):
-                if time.time() - last_token_check > 60:
-                    headers = check_token(portal, mac)
-                    last_token_check = time.time()
+        nonlocal headers, last_token_check
+        while True:
+            try:
+                # refresh token เฉพาะ portal (ไม่ใช่ direct)
+                if not is_direct_url(stream):
+                    if time.time() - last_token_check > 60:
+                        headers = check_token(portal, mac)
+                        last_token_check = time.time()
 
-            with requests.get(
-                stream,
-                headers=headers,
-                stream=True,
-                timeout=(5, None),
-                allow_redirects=True
-            ) as r:
-                r.raise_for_status()
+                with requests.get(
+                    stream,
+                    headers=headers,
+                    stream=True,
+                    timeout=(5, None),
+                    allow_redirects=True
+                ) as r:
+                    r.raise_for_status()
 
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        yield chunk
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            yield chunk
 
-                # ⭐ stream จบเอง → reconnect ใหม่
-                time.sleep(0.2)
+                    # ⭐ stream จบเอง → reconnect ใหม่
+                    time.sleep(0.2)
+                    continue
+
+            except Exception:
+                # error ใด ๆ → reconnect ใหม่
+                time.sleep(0.5)
                 continue
-
-        except Exception:
-            # error ใด ๆ → reconnect ใหม่
-            time.sleep(0.5)
-            continue
-
-
 
     return Response(
         generate(),
@@ -227,6 +224,7 @@ def play():
 
 
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -236,6 +234,7 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
 
 
 
