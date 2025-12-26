@@ -116,7 +116,7 @@ def play():
 
     def generate():
         try:
-            for chunk in r.iter_content(chunk_size=8192):
+            for chunk in r.iter_content(chunk_size=65536):
                 if chunk:
                     yield chunk
         except GeneratorExit:
@@ -139,3 +139,4 @@ def home():
 if __name__ == "__main__":
     # สำหรับทดสอบ local
     app.run(host="0.0.0.0", port=5000)
+
