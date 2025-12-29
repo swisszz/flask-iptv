@@ -47,6 +47,20 @@ def extract_stream(cmd):
     return None
 
 # --------------------------
+# Token helper
+# --------------------------
+def get_token():
+    """
+    คืนค่า (ชื่อ token, ค่า token) อันแรกที่เจอ
+    รองรับ token, t, auth
+    """
+    for key in ("token", "t", "auth"):
+        value = request.args.get(key)
+        if value:
+            return key, value
+    return None, None
+
+# --------------------------
 # Portal
 # --------------------------
 def get_channels(portal_url, mac):
@@ -66,14 +80,26 @@ def get_channels(portal_url, mac):
             timeout=10
         )
         r.raise_for_status()
-        data = r.json().get("js", {}).get("data", [])
+        json_data = r.json()
+        js_data = json_data.get("js", {})
+        data = js_data.get("data", [])
 
         channels = []
-        for ch in data:
-            if isinstance(ch, dict):
-                channels.append(ch)
-            elif isinstance(ch, list) and len(ch) >= 2:
-                channels.append({"name": ch[0], "cmd": ch[1]})
+
+        # ตรวจชนิด data
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    channels.append(v)
+                elif isinstance(v, list) and len(v) >= 2:
+                    channels.append({"name": v[0], "cmd": v[1]})
+        elif isinstance(data, list):
+            for ch in data:
+                if isinstance(ch, dict):
+                    channels.append(ch)
+                elif isinstance(ch, list) and len(ch) >= 2:
+                    channels.append({"name": ch[0], "cmd": ch[1]})
+
         return channels
 
     except Exception as e:
@@ -91,7 +117,7 @@ def playlist():
     except Exception as e:
         return f"MAC list error: {e}", 500
 
-    token = request.args.get("token", "")
+    token_key, token_value = get_token()
     out = "#EXTM3U\n"
 
     for portal, macs in data.items():
@@ -112,8 +138,8 @@ def playlist():
                 f"&cmd={quote_plus(stream)}"
             )
 
-            if token:
-                play_url += f"&token={quote_plus(token)}"
+            if token_value:
+                play_url += f"&{token_key}={quote_plus(token_value)}"
 
             name = ch.get("name", "Live")
             logo = get_channel_logo(ch, portal)
@@ -127,11 +153,12 @@ def playlist():
 
     return Response(out, mimetype="audio/x-mpegurl")
 
+
 @app.route("/play")
 def play():
     stream = request.args.get("cmd")
     mac = request.args.get("mac")
-    token = request.args.get("token")
+    token_key, token_value = get_token()
 
     if not stream or not is_valid_stream_url(stream):
         return "Invalid stream URL", 400
@@ -144,8 +171,8 @@ def play():
     }
 
     params = {}
-    if token:
-        params["token"] = token
+    if token_value:
+        params[token_key] = token_value
 
     try:
         r = requests.get(
@@ -153,7 +180,7 @@ def play():
             headers=headers,
             params=params,
             stream=True,
-            timeout=(5, None)  # สำคัญมากสำหรับ IPTV
+            timeout=(5, None)
         )
         r.raise_for_status()
     except Exception as e:
@@ -176,9 +203,11 @@ def play():
         }
     )
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 # --------------------------
 # Run
