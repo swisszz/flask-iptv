@@ -1,5 +1,5 @@
 from flask import Flask, Response, request
-import requests, json, random, os
+import requests, json, random
 from urllib.parse import quote_plus, urlparse
 
 app = Flask(__name__)
@@ -9,9 +9,6 @@ app = Flask(__name__)
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-
-# swisszz Environment Variable
-PASSWORD = os.environ.get("STREAM_PASSWORD", "")
 
 # --------------------------
 # Utils
@@ -53,6 +50,10 @@ def extract_stream(cmd):
 # Token helper
 # --------------------------
 def get_token():
+    """
+    คืนค่า (ชื่อ token, ค่า token) อันแรกที่เจอ
+    รองรับ token, t, auth
+    """
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
         if value:
@@ -84,6 +85,8 @@ def get_channels(portal_url, mac):
         data = js_data.get("data", [])
 
         channels = []
+
+        # ตรวจชนิด data
         if isinstance(data, dict):
             for k, v in data.items():
                 if isinstance(v, dict):
@@ -96,6 +99,7 @@ def get_channels(portal_url, mac):
                     channels.append(ch)
                 elif isinstance(ch, list) and len(ch) >= 2:
                     channels.append({"name": ch[0], "cmd": ch[1]})
+
         return channels
 
     except Exception as e:
@@ -103,20 +107,10 @@ def get_channels(portal_url, mac):
         return []
 
 # --------------------------
-# Password check
-# --------------------------
-def check_password(pwd):
-    return pwd == PASSWORD
-
-# --------------------------
 # Routes
 # --------------------------
 @app.route("/playlist.m3u")
 def playlist():
-    pwd = request.args.get("pwd")
-    if not check_password(pwd):
-        return "Invalid password", 403
-
     try:
         with open(MACLIST_FILE, encoding="utf-8") as f:
             data = json.load(f)
@@ -136,6 +130,7 @@ def playlist():
                 continue
 
             mac = random.choice(macs)
+
             play_url = (
                 f"http://{request.host}/play"
                 f"?portal={quote_plus(portal)}"
@@ -161,10 +156,6 @@ def playlist():
 
 @app.route("/play")
 def play():
-    pwd = request.args.get("pwd")
-    if not check_password(pwd):
-        return "Invalid password", 403
-
     stream = request.args.get("cmd")
     mac = request.args.get("mac")
     token_key, token_value = get_token()
@@ -216,6 +207,7 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 # --------------------------
 # Run
