@@ -10,13 +10,13 @@ app = Flask(__name__)
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 
-# Allowed countries
+# Allowed countries keywords
 ALLOWED_COUNTRIES = {
-    "UK": ["UK", "United Kingdom", "Britain", "England"],
-    "DE": ["DE", "Germany", "Deutschland"],
-    "TH": ["TH", "Thailand", "Thai", "ไทย"],
-    "AT": ["AT", "Austria", "Österreich", "Osterreich"],
-    "CH": ["CH", "Switzerland", "Swiss", "Schweiz", "Suisse", "Svizzera"],
+    "UK": ["UK", "UNITED KINGDOM", "BRITAIN", "ENGLAND"],
+    "DE": ["DE", "GERMANY", "DEUTSCHLAND"],
+    "TH": ["TH", "THAILAND", "THAI", "ไทย"],
+    "AT": ["AT", "AUSTRIA", "ÖSTERREICH", "OESTERREICH"],
+    "CH": ["CH", "SWISS", "SCHWEIZ", "SUISSE", "SVIZZERA"],
 }
 
 # --------------------------
@@ -58,30 +58,24 @@ def extract_stream(cmd):
 # --------------------------
 # Country filter helpers
 # --------------------------
-def channel_allowed(channel):
-    text = (
-        (channel.get("name") or "") +
-        (channel.get("group") or "") +
-        (channel.get("category") or "")
-    ).lower()
+def extract_country_from_group(group):
+    """
+    ตรวจชื่อประเทศจาก group field เช่น TV#####SWISS#####
+    """
+    group = (group or "").upper()
+    for country_key, keywords in ALLOWED_COUNTRIES.items():
+        for kw in keywords:
+            if kw.upper() in group:
+                return country_key
+    return None
 
-    for keywords in ALLOWED_COUNTRIES.values():
-        for k in keywords:
-            if k.lower() in text:
-                return True
-    return False
+def channel_allowed(channel):
+    country = extract_country_from_group(channel.get("group"))
+    return country is not None
 
 def detect_country(channel):
-    text = (
-        (channel.get("name") or "") +
-        (channel.get("group") or "")
-    ).lower()
-
-    for country, keywords in ALLOWED_COUNTRIES.items():
-        for k in keywords:
-            if k.lower() in text:
-                return country
-    return "OTHER"
+    country = extract_country_from_group(channel.get("group"))
+    return country or "OTHER"
 
 # --------------------------
 # Token helper
@@ -172,10 +166,9 @@ def playlist():
             if token_value:
                 play_url += f"&{token_key}={quote_plus(token_value)}"
 
-            name = ch.get("name", "Live")
+            name = str(ch.get("name") or "Live")
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
-
             country = detect_country(ch)
 
             out += (
