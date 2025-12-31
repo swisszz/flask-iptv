@@ -1,7 +1,6 @@
 from flask import Flask, Response, request
 import requests, json, random
 from urllib.parse import quote_plus, urlparse
-import re
 
 app = Flask(__name__)
 
@@ -10,56 +9,6 @@ app = Flask(__name__)
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-
-# --------------------------
-# Country Mapping
-# --------------------------
-COUNTRY_ALIASES = {
-    "TH", "JP", "US", "UK", "KR", "CN", "TW", "HK",
-    "FR", "DE", "IT", "ES", "RU", "IN", "VN", "ID",
-    "MY", "SG", "PH", "AU", "AT", "CH"
-}
-
-COUNTRY_NAMES = {
-    "THAILAND": "TH",
-    "JAPAN": "JP",
-    "UNITED STATES": "US",
-    "USA": "US",
-    "UNITED KINGDOM": "UK",
-    "KOREA": "KR",
-    "SOUTH KOREA": "KR",
-    "CHINA": "CN",
-    "TAIWAN": "TW",
-    "HONG KONG": "HK",
-    "FRANCE": "FR",
-    "GERMANY": "DE",
-    "ITALY": "IT",
-    "SPAIN": "ES",
-    "RUSSIA": "RU",
-    "INDIA": "IN",
-    "VIETNAM": "VN",
-    "INDONESIA": "ID",
-    "MALAYSIA": "MY",
-    "SINGAPORE": "SG",
-    "PHILIPPINES": "PH",
-    "AUSTRALIA": "AU",
-    "AUSTRIA": "AT",
-    "SWISS": "CH",
-    "SWITZERLAND": "CH"
-}
-
-COUNTRY_KEYWORDS = {
-    "THAI": "TH",
-    "JAPAN": "JP",
-    "NHK": "JP",
-    "KOREA": "KR",
-    "USA": "US",
-    "CNN": "US",
-    "BBC": "UK",
-    "FRANCE": "FR",
-    "GERMAN": "DE",
-    "VIET": "VN"
-}
 
 # --------------------------
 # Utils
@@ -101,59 +50,15 @@ def extract_stream(cmd):
 # Token helper
 # --------------------------
 def get_token():
+    """
+    คืนค่า (ชื่อ token, ค่า token) อันแรกที่เจอ
+    รองรับ token, t, auth
+    """
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
         if value:
             return key, value
     return None, None
-
-# --------------------------
-# Country detection
-# --------------------------
-def normalize_country(value):
-    if not value:
-        return None
-    u = value.upper().strip()
-    u = re.sub(r"[^A-Z ]", "", u)
-
-    for name, code in COUNTRY_NAMES.items():
-        if name in u:
-            return code
-
-    if u in COUNTRY_ALIASES:
-        return u
-
-    return None
-
-def detect_country(ch):
-    name = ch.get("name", "")
-    if isinstance(name, str):
-        # pattern ######COUNTRY######
-        m = re.search(r"#{5,}\s*([A-Z ]+?)\s*#{5,}", name.upper())
-        if m:
-            c = normalize_country(m.group(1))
-            if c:
-                return c
-
-    # field จาก portal
-    for key in ("country", "country_code", "category", "group", "lang"):
-        val = ch.get(key)
-        if isinstance(val, str) and val.strip():
-            c = normalize_country(val)
-            if c:
-                return c
-
-    # fallback จากชื่อช่อง
-    if isinstance(name, str):
-        u = name.upper()
-        for code in COUNTRY_ALIASES:
-            if f"[{code}]" in u or f"({code})" in u or u.endswith(f" {code}") or f"-{code}" in u:
-                return code
-        for key, code in COUNTRY_KEYWORDS.items():
-            if key in u:
-                return code
-
-    return None
 
 # --------------------------
 # Portal
@@ -181,6 +86,7 @@ def get_channels(portal_url, mac):
 
         channels = []
 
+        # ตรวจชนิด data
         if isinstance(data, dict):
             for k, v in data.items():
                 if isinstance(v, dict):
@@ -212,9 +118,7 @@ def playlist():
         return f"MAC list error: {e}", 500
 
     token_key, token_value = get_token()
-
-    # แยก channel ตามประเทศ
-    playlists = {}  # country_code -> m3u text
+    out = "#EXTM3U\n"
 
     for portal, macs in data.items():
         if not macs:
@@ -226,6 +130,7 @@ def playlist():
                 continue
 
             mac = random.choice(macs)
+
             play_url = (
                 f"http://{request.host}/play"
                 f"?portal={quote_plus(portal)}"
@@ -236,38 +141,18 @@ def playlist():
             if token_value:
                 play_url += f"&{token_key}={quote_plus(token_value)}"
 
-            country = detect_country(ch)
             name = ch.get("name", "Live")
-            if country:
-                display_name = f"[{country}] {name}"
-            else:
-                display_name = name
-
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
 
-            m3u_line = (
-                f'#EXTINF:-1 tvg-id="{get_channel_id(display_name, mac)}" '
-                f'tvg-name="{display_name}"{logo_attr} group-title="Live TV",{display_name}\n'
+            out += (
+                f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
+                f'tvg-name="{name}"{logo_attr} group-title="Live TV",{name}\n'
                 f'{play_url}\n'
             )
 
-            key = country or "ALL"
-            if key not in playlists:
-                playlists[key] = "#EXTM3U\n"
-            playlists[key] += m3u_line
+    return Response(out, mimetype="audio/x-mpegurl")
 
-    # เลือก country ผ่าน query string ?country=CH
-    req_country = request.args.get("country")
-    if req_country:
-        content = playlists.get(req_country.upper())
-        if not content:
-            return f"No channels for country {req_country}", 404
-        return Response(content, mimetype="audio/x-mpegurl")
-
-    # ถ้าไม่มี country query จะรวมทุกประเทศ (เหมือนเดิม)
-    combined = "".join(playlists.values())
-    return Response(combined, mimetype="audio/x-mpegurl")
 
 @app.route("/play")
 def play():
@@ -318,9 +203,11 @@ def play():
         }
     )
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 # --------------------------
 # Run
