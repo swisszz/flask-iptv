@@ -1,6 +1,8 @@
 from flask import Flask, Response, request
-import requests, json, random
+import requests, json, random, os, gzip, boto3
 from urllib.parse import quote_plus, urlparse
+from datetime import datetime
+from dateutil.parser import parse
 
 app = Flask(__name__)
 
@@ -8,9 +10,17 @@ app = Flask(__name__)
 # Config
 # --------------------------
 MACLIST_FILE = "maclist.json"
+GUIDE_FILE = "guide.xml"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 
-# Allowed countries
+# Cloudflare R2 config
+ACCOUNT_ID = "145ef3f7a9832804bef0e31548db8a83"
+R2_ACCESS_KEY = "YOUR_ACCESS_KEY"
+R2_SECRET_KEY = "YOUR_SECRET_KEY"
+R2_BUCKET_NAME = "stbemu"
+R2_OBJECT_KEY = "stbemu.csv.gz"
+R2_ENDPOINT_URL = f"https://{ACCOUNT_ID}.r2.cloudflarestorage.com"
+
 ALLOWED_COUNTRIES = {
     "UK": ["UK", "United Kingdom", "Britain", "England"],
     "DE": ["DE", "Germany", "Deutschland"],
@@ -20,227 +30,69 @@ ALLOWED_COUNTRIES = {
 }
 
 # --------------------------
-# Utils
+# Utilities
 # --------------------------
-def is_direct_url(url):
-    if not url:
-        return False
-    u = url.lower()
-    return "live.php" in u or "/ch/" in u or "localhost" in u
+def update_maclist():
+    """ดึง MAC list จาก R2 และสร้าง maclist.json"""
+    s3_client = boto3.client("s3",
+                             aws_access_key_id=R2_ACCESS_KEY,
+                             aws_secret_access_key=R2_SECRET_KEY,
+                             endpoint_url=R2_ENDPOINT_URL)
+    response = s3_client.get_object(Bucket=R2_BUCKET_NAME, Key=R2_OBJECT_KEY)
+    gzip_file = gzip.GzipFile(fileobj=response["Body"])
+    csv_content = gzip_file.read().decode("utf-8").splitlines()
 
-def is_valid_stream_url(url):
+    alllist = {}
+    timestamp = datetime.timestamp(datetime.now())
+
+    for line in csv_content:
+        if "," in line:
+            url, mac, *expire_parts = line.split(",")
+            try:
+                expire_time = datetime.timestamp(parse(",".join(expire_parts), fuzzy=True))
+                if timestamp >= expire_time: 
+                    continue
+            except:
+                pass
+            url = url.strip().rstrip("/").replace(":80/c", "/c")
+            if not url.endswith("/c"): url += "/c"
+            alllist.setdefault(url, [])
+            if mac not in alllist[url]:
+                alllist[url].append(mac)
+
+    with open(MACLIST_FILE, "w") as f:
+        json.dump(alllist, f, indent=4)
+    app.logger.info("MAC list updated")
+
+
+def update_guide_xml():
+    """สร้าง guide.xml ตัวอย่างจาก TVDigital"""
+    epg = ['<?xml version="1.0" encoding="UTF-8" ?>\n<tv>\n']
     try:
-        u = urlparse(url)
-        return u.scheme in ("http", "https")
-    except Exception:
-        return False
-
-def get_channel_id(name, mac):
-    safe = "".join(c for c in name if c.isalnum())
-    return f"{safe}_{mac.replace(':','')}"
-
-def get_channel_logo(channel, portal):
-    logo = channel.get("logo") or channel.get("icon") or ""
-    if logo and not logo.startswith("http"):
-        logo = portal.rstrip("/") + "/" + logo.lstrip("/")
-    return logo
-
-def extract_stream(cmd):
-    if not cmd:
-        return None
-    cmd = cmd.replace("ffmpeg", "").strip()
-    cmd = cmd.split("|")[0]
-    for part in cmd.split():
-        if part.startswith(("http://", "https://")):
-            return part
-    return None
-
-# --------------------------
-# Country filter helpers
-# --------------------------
-def channel_allowed(channel):
-    text = (
-        (channel.get("name") or "") +
-        (channel.get("group") or "") +
-        (channel.get("category") or "")
-    ).lower()
-
-    for keywords in ALLOWED_COUNTRIES.values():
-        for k in keywords:
-            if k.lower() in text:
-                return True
-    return False
-
-def detect_country(channel):
-    text = (
-        (channel.get("name") or "") +
-        (channel.get("group") or "")
-    ).lower()
-
-    for country, keywords in ALLOWED_COUNTRIES.items():
-        for k in keywords:
-            if k.lower() in text:
-                return country
-    return "OTHER"
-
-# --------------------------
-# Token helper
-# --------------------------
-def get_token():
-    for key in ("token", "t", "auth"):
-        value = request.args.get(key)
-        if value:
-            return key, value
-    return None, None
-
-# --------------------------
-# Portal
-# --------------------------
-def get_channels(portal_url, mac):
-    if is_direct_url(portal_url):
-        return [{"name": "Live Stream", "cmd": portal_url}]
-
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Cookie": f"mac={mac}"
-    }
-
-    try:
-        r = requests.get(
-            f"{portal_url.rstrip('/')}/server/load.php",
-            params={"type": "itv", "action": "get_all_channels"},
-            headers=headers,
-            timeout=10
-        )
-        r.raise_for_status()
-        json_data = r.json()
-        data = json_data.get("js", {}).get("data", [])
-
-        channels = []
-
-        if isinstance(data, dict):
-            for v in data.values():
-                if isinstance(v, dict):
-                    channels.append(v)
-        elif isinstance(data, list):
-            for ch in data:
-                if isinstance(ch, dict):
-                    channels.append(ch)
-
-        return channels
-
+        tvdDE_header = {'user-agent': 'PIT-TVdigital-Android/14', 'accept-encoding': 'gzip'}
+        tvdDE_channels = requests.get(
+            'https://mobile.tvdigital.de/appdata?appVersion=50&bundleId=de.funke.tvdigital',
+            headers=tvdDE_header, timeout=10
+        ).json()["channels"]
+        for ch in tvdDE_channels:
+            epg.append(f'  <channel id="{ch["id"]}"><display-name lang="de">{ch["name"]}</display-name></channel>\n')
+        epg.append('</tv>')
+        with open(GUIDE_FILE, "w", encoding="utf-8") as f:
+            f.writelines(epg)
+        app.logger.info("guide.xml created")
     except Exception as e:
-        app.logger.error(f"get_channels error: {e}")
-        return []
+        app.logger.error(f"update_guide_xml error: {e}")
 
 # --------------------------
-# Routes
+# Flask Routes (เหมือนเดิม)
 # --------------------------
-@app.route("/playlist.m3u")
-def playlist():
-    try:
-        with open(MACLIST_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        return f"MAC list error: {e}", 500
-
-    token_key, token_value = get_token()
-    out = "#EXTM3U\n"
-
-    for portal, macs in data.items():
-        if not macs:
-            continue
-
-        mac = random.choice(macs)
-
-        for ch in get_channels(portal, mac):
-
-            if not channel_allowed(ch):
-                continue
-
-            stream = extract_stream(ch.get("cmd"))
-            if not stream:
-                continue
-
-            play_url = (
-                f"http://{request.host}/play"
-                f"?portal={quote_plus(portal)}"
-                f"&mac={mac}"
-                f"&cmd={quote_plus(stream)}"
-            )
-
-            if token_value:
-                play_url += f"&{token_key}={quote_plus(token_value)}"
-
-            name = ch.get("name", "Live")
-            logo = get_channel_logo(ch, portal)
-            logo_attr = f' tvg-logo="{logo}"' if logo else ""
-
-            country = detect_country(ch)
-
-            out += (
-                f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
-                f'tvg-name="{name}"{logo_attr} group-title="{country}",{name}\n'
-                f'{play_url}\n'
-            )
-
-    return Response(out, mimetype="audio/x-mpegurl")
-
-@app.route("/play")
-def play():
-    stream = request.args.get("cmd")
-    mac = request.args.get("mac")
-    token_key, token_value = get_token()
-
-    if not stream or not is_valid_stream_url(stream):
-        return "Invalid stream URL", 400
-
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Cookie": f"mac={mac}",
-        "Accept": "*/*",
-        "Connection": "keep-alive"
-    }
-
-    params = {}
-    if token_value:
-        params[token_key] = token_value
-
-    try:
-        r = requests.get(
-            stream,
-            headers=headers,
-            params=params,
-            stream=True,
-            timeout=(5, None)
-        )
-        r.raise_for_status()
-    except Exception as e:
-        return f"Stream error: {e}", 500
-
-    def generate():
-        try:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        except Exception:
-            pass
-
-    return Response(
-        generate(),
-        content_type=r.headers.get("Content-Type", "video/mp2t"),
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
-    )
-
-@app.route("/")
-def home():
-    return "Live TV Proxy running (UK / DE / TH / AT / CH)"
+# ... ใส่โค้ด Flask /playlist.m3u, /play, / ตามที่คุณมีเดิม ...
 
 # --------------------------
-# Run
+# Startup
 # --------------------------
 if __name__ == "__main__":
+    # อัปเดต maclist และ guide ก่อนเริ่ม Flask
+    update_maclist()
+    update_guide_xml()
     app.run(host="0.0.0.0", port=5000, threaded=True)
