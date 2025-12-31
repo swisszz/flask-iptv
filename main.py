@@ -128,10 +128,9 @@ def get_channels(portal_url, mac):
         return []
 
 # --------------------------
-# Routes
+# Playlist generator
 # --------------------------
-@app.route("/playlist.m3u")
-def playlist():
+def generate_playlist(country_filter=None):
     try:
         with open(MACLIST_FILE, encoding="utf-8") as f:
             data = json.load(f)
@@ -144,12 +143,14 @@ def playlist():
     for portal, macs in data.items():
         if not macs:
             continue
-
         mac = random.choice(macs)
 
         for ch in get_channels(portal, mac):
-
             if not channel_allowed(ch):
+                continue
+
+            country = detect_country(ch)
+            if country_filter and country != country_filter:
                 continue
 
             stream = extract_stream(ch.get("cmd"))
@@ -162,14 +163,12 @@ def playlist():
                 f"&mac={mac}"
                 f"&cmd={quote_plus(stream)}"
             )
-
             if token_value:
                 play_url += f"&{token_key}={quote_plus(token_value)}"
 
-            name = str(ch.get("name") or "Live")
+            name = ch.get("name") or "Live"
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
-            country = detect_country(ch)
 
             out += (
                 f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
@@ -178,6 +177,20 @@ def playlist():
             )
 
     return Response(out, mimetype="audio/x-mpegurl")
+
+# --------------------------
+# Routes
+# --------------------------
+@app.route("/playlist.m3u")
+def playlist():
+    return generate_playlist()  # playlist รวมทุกประเทศ
+
+@app.route("/<country>.m3u")
+def playlist_country(country):
+    country = country.upper()
+    if country not in ALLOWED_COUNTRIES:
+        return "Invalid country", 400
+    return generate_playlist(country_filter=country)
 
 @app.route("/play")
 def play():
