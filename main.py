@@ -130,11 +130,6 @@ def playlist():
                 continue
 
             mac = random.choice(macs)
-            mac_safe = mac.replace(":", "").upper()  # MAC สำหรับ URL
-
-            # แทน MAC เฉพาะ URL ลงท้าย "_"
-            if stream.endswith("_"):
-                stream = stream[:-1] + mac_safe
 
             play_url = (
                 f"http://{request.host}/play"
@@ -157,6 +152,7 @@ def playlist():
             )
 
     return Response(out, mimetype="audio/x-mpegurl")
+
 
 @app.route("/play")
 def play():
@@ -184,8 +180,7 @@ def play():
             headers=headers,
             params=params,
             stream=True,
-            timeout=(5, None),
-            allow_redirects=True
+            timeout=(5, None)
         )
         r.raise_for_status()
     except Exception as e:
@@ -208,9 +203,11 @@ def play():
         }
     )
 
+
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 # --------------------------
 # Run
