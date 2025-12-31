@@ -10,6 +10,15 @@ app = Flask(__name__)
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 
+# Allowed countries
+ALLOWED_COUNTRIES = {
+    "UK": ["UK", "United Kingdom", "Britain", "England"],
+    "DE": ["DE", "Germany", "Deutschland"],
+    "TH": ["TH", "Thailand", "Thai", "ไทย"],
+    "AT": ["AT", "Austria", "Österreich", "Osterreich"],
+    "CH": ["CH", "Switzerland", "Swiss", "Schweiz", "Suisse", "Svizzera"],
+}
+
 # --------------------------
 # Utils
 # --------------------------
@@ -47,13 +56,37 @@ def extract_stream(cmd):
     return None
 
 # --------------------------
+# Country filter helpers
+# --------------------------
+def channel_allowed(channel):
+    text = (
+        (channel.get("name") or "") +
+        (channel.get("group") or "") +
+        (channel.get("category") or "")
+    ).lower()
+
+    for keywords in ALLOWED_COUNTRIES.values():
+        for k in keywords:
+            if k.lower() in text:
+                return True
+    return False
+
+def detect_country(channel):
+    text = (
+        (channel.get("name") or "") +
+        (channel.get("group") or "")
+    ).lower()
+
+    for country, keywords in ALLOWED_COUNTRIES.items():
+        for k in keywords:
+            if k.lower() in text:
+                return country
+    return "OTHER"
+
+# --------------------------
 # Token helper
 # --------------------------
 def get_token():
-    """
-    คืนค่า (ชื่อ token, ค่า token) อันแรกที่เจอ
-    รองรับ token, t, auth
-    """
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
         if value:
@@ -81,24 +114,18 @@ def get_channels(portal_url, mac):
         )
         r.raise_for_status()
         json_data = r.json()
-        js_data = json_data.get("js", {})
-        data = js_data.get("data", [])
+        data = json_data.get("js", {}).get("data", [])
 
         channels = []
 
-        # ตรวจชนิด data
         if isinstance(data, dict):
-            for k, v in data.items():
+            for v in data.values():
                 if isinstance(v, dict):
                     channels.append(v)
-                elif isinstance(v, list) and len(v) >= 2:
-                    channels.append({"name": v[0], "cmd": v[1]})
         elif isinstance(data, list):
             for ch in data:
                 if isinstance(ch, dict):
                     channels.append(ch)
-                elif isinstance(ch, list) and len(ch) >= 2:
-                    channels.append({"name": ch[0], "cmd": ch[1]})
 
         return channels
 
@@ -124,12 +151,16 @@ def playlist():
         if not macs:
             continue
 
-        for ch in get_channels(portal, random.choice(macs)):
+        mac = random.choice(macs)
+
+        for ch in get_channels(portal, mac):
+
+            if not channel_allowed(ch):
+                continue
+
             stream = extract_stream(ch.get("cmd"))
             if not stream:
                 continue
-
-            mac = random.choice(macs)
 
             play_url = (
                 f"http://{request.host}/play"
@@ -145,14 +176,15 @@ def playlist():
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
 
+            country = detect_country(ch)
+
             out += (
                 f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
-                f'tvg-name="{name}"{logo_attr} group-title="Live TV",{name}\n'
+                f'tvg-name="{name}"{logo_attr} group-title="{country}",{name}\n'
                 f'{play_url}\n'
             )
 
     return Response(out, mimetype="audio/x-mpegurl")
-
 
 @app.route("/play")
 def play():
@@ -203,11 +235,9 @@ def play():
         }
     )
 
-
 @app.route("/")
 def home():
-    return "Live TV Proxy running"
-
+    return "Live TV Proxy running (UK / DE / TH / AT / CH)"
 
 # --------------------------
 # Run
