@@ -57,7 +57,7 @@ def get_group_title(ch):
         group = "Sport"
     # ✅ News
     elif "news" in name or genre == "3":
-        group = "News"
+        group = "DAZN"
     # ✅ Dokument (รวม Discovery, NatGeo, Animal Planet)
     elif any(x in name for x in ("doc", "discovery", "natgeo", "natgeowild", "animal planet")):
         group = "Dokument"
@@ -227,4 +227,5 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
 
