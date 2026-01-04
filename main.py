@@ -47,9 +47,9 @@ def get_group_title(ch):
     if not country:
         # ตัวอย่าง detect จากชื่อช่อง
         if "deutsch" in name or "german" in name or "ard" in name:
-            country = "DE"
+            country = "#####DE#####"
         elif "swiss" in name or "sf" in name:
-            country = "SWISS"
+            country = "#####SWISS#####"
         else:
             country = ""
 
@@ -58,13 +58,13 @@ def get_group_title(ch):
     # ตรวจประเภทช่อง
     group = "Live TV"
     if "skysport" in name:
-        group = "Skysport"
+        group = "News"
     elif "movie" in name or genre == "1":
         group = "Movie"
     elif "sport" in name or genre == "2":
         group = "Sport"
     elif "news" in name or genre == "3":
-        group = "News"
+        group = "Skysport"
     elif "doc" in name or "discovery" in name:
         group = "Dokument"
 
@@ -236,3 +236,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
