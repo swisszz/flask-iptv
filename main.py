@@ -38,28 +38,38 @@ def clean_name(name):
     return " ".join(name.split()).strip()
 
 def get_group_title(ch):
-    """กำหนด group-title + แยกประเทศเฉพาะ Live TV"""
+    """แยกประเภท + แยกประเทศสำหรับทุกกลุ่ม"""
     genre = str(ch.get("tv_genre_id", "")).lower()
     name = ch.get("name", "").lower()
-    country = ch.get("country", "").upper() if ch.get("country") else ""
 
-    # กลุ่มช่องเริ่มต้น
-    group = "Live TV"
+    # ตรวจ country
+    country = ch.get("country", "")
+    if not country:
+        # ตัวอย่าง detect จากชื่อช่อง
+        if "deutsch" in name or "german" in name or "ard" in name:
+            country = "DE"
+        elif "swiss" in name or "sf" in name:
+            country = "SWISS"
+        else:
+            country = ""
+
+    country = country.upper() if country else ""
 
     # ตรวจประเภทช่อง
+    group = "Live TV"
     if "skysport" in name:
         group = "Skysport"
-    elif "movie" in name or genre in ("1",):
+    elif "movie" in name or genre == "1":
         group = "Movie"
-    elif "sport" in name or genre in ("2",):
+    elif "sport" in name or genre == "2":
         group = "Sport"
-    elif "news" in name or genre in ("3",):
+    elif "news" in name or genre == "3":
         group = "News"
     elif "doc" in name or "discovery" in name:
         group = "Dokument"
 
-    # แยกประเทศเฉพาะ Live TV
-    if group == "Live TV" and country:
+    # เพิ่ม country ต่อท้ายทุกกลุ่ม
+    if country:
         group = f"{group} - {country}"
 
     return group
