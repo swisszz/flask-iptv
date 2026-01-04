@@ -124,12 +124,12 @@ def playlist():
         if not macs:
             continue
 
-        for ch in get_channels(portal, random.choice(macs)):
+        mac = macs[0]  # ใช้ MAC เดียว (ไม่ random)
+
+        for ch in get_channels(portal, mac):
             stream = extract_stream(ch.get("cmd"))
             if not stream:
                 continue
-
-            mac = random.choice(macs)
 
             play_url = (
                 f"http://{request.host}/play"
@@ -152,6 +152,7 @@ def playlist():
             )
 
     return Response(out, mimetype="audio/x-mpegurl")
+
 
 
 @app.route("/play")
@@ -214,3 +215,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
