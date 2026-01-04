@@ -47,9 +47,9 @@ def get_group_title(ch):
     if not country:
         # ตัวอย่าง detect จากชื่อช่อง
         if "deutsch" in name or "german" in name or "ard" in name:
-            country = "DE"
+            country = "#####DE#####"
         elif "swiss" in name or "sf" in name:
-            country = "SWISS"
+            country = "#####SWISS#####"
         else:
             country = ""
 
@@ -239,5 +239,6 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
 
 
