@@ -38,22 +38,10 @@ def clean_name(name):
     return " ".join(name.split()).strip()
 
 def get_group_title(ch):
-    """แยกประเภท + แยกประเทศสำหรับทุกกลุ่ม"""
+    """แยกประเภทช่องโดยไม่ต่อท้าย country"""
 
     name = ch.get("name", "").lower()
     genre = str(ch.get("tv_genre_id", "")).lower()
-
-    # ตรวจ country
-    country = ch.get("country", "")
-    if not country:
-        # ตัวอย่าง detect จากชื่อช่อง
-        if "deutsch" in name or "german" in name or "ard" in name:
-            country = "DE"
-        elif "swiss" in name or "sf" in name:
-            country = "SWISS"
-        else:
-            country = ""
-    country = country.upper() if country else ""
 
     # ตรวจประเภทช่อง
     group = "Live TV"
@@ -74,11 +62,8 @@ def get_group_title(ch):
     elif any(x in name for x in ("doc", "discovery", "natgeo", "natgeowild", "animal planet")):
         group = "Dokument"
 
-    # เพิ่ม country ต่อท้ายทุกกลุ่ม
-    if country:
-        group = f"{group} - {country}"
-
     return group
+
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
@@ -242,3 +227,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
