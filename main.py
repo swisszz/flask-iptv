@@ -9,8 +9,7 @@ app = Flask(__name__)
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-# ปล่อย EPG ว่างหรือใส่ URL ก็ได้
-EPG_URL = ""  # "" หมายถึงไม่ใช้ EPG
+EPG_URL = ""  # ใส่ URL EPG หรือปล่อยว่าง
 
 # --------------------------
 # Utils
@@ -39,14 +38,18 @@ def clean_name(name):
     return " ".join(name.split()).strip()
 
 def get_group_title(ch):
-    """แยกประเภท + ประเทศ"""
+    """กำหนด group-title + แยกประเทศเฉพาะ Live TV"""
     genre = str(ch.get("tv_genre_id", "")).lower()
     name = ch.get("name", "").lower()
     country = ch.get("country", "").upper() if ch.get("country") else ""
 
+    # กลุ่มช่องเริ่มต้น
     group = "Live TV"
 
-    if "movie" in name or genre in ("1",):
+    # ตรวจประเภทช่อง
+    if "skysport" in name:
+        group = "Skysport"
+    elif "movie" in name or genre in ("1",):
         group = "Movie"
     elif "sport" in name or genre in ("2",):
         group = "Sport"
@@ -55,7 +58,8 @@ def get_group_title(ch):
     elif "doc" in name or "discovery" in name:
         group = "Dokument"
 
-    if country:
+    # แยกประเทศเฉพาะ Live TV
+    if group == "Live TV" and country:
         group = f"{group} - {country}"
 
     return group
@@ -141,7 +145,7 @@ def playlist():
     for portal, macs in data.items():
         if not macs:
             continue
-        mac = macs[0]
+        mac = macs[0]  # ใช้ MAC เดียว
 
         for ch in get_channels(portal, mac):
             stream = extract_stream(ch.get("cmd"))
