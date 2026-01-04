@@ -71,12 +71,13 @@ def get_group_title(ch):
         group = "Movie"
     elif "sport" in name or genre == "2":
         group = "Sport"
-    elif "news" in name or genre == "3":
-        group = "News"
+    elif "dazn" in name:  # ✅ DAZN จัดเป็น Sport
+        group = "Sport"
     elif is_dokument_channel(name):
         group = "Dokument"
 
     return group
+
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
@@ -238,3 +239,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
