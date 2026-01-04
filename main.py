@@ -39,8 +39,9 @@ def clean_name(name):
 
 def get_group_title(ch):
     """แยกประเภท + แยกประเทศสำหรับทุกกลุ่ม"""
-    genre = str(ch.get("tv_genre_id", "")).lower()
+
     name = ch.get("name", "").lower()
+    genre = str(ch.get("tv_genre_id", "")).lower()
 
     # ตรวจ country
     country = ch.get("country", "")
@@ -52,9 +53,6 @@ def get_group_title(ch):
             country = "SWISS"
         else:
             country = ""
-    
-    # ลบเครื่องหมาย # ออกทั้งหมด
-    country = country.replace("#", "")
     country = country.upper() if country else ""
 
     # ตรวจประเภทช่อง
@@ -63,13 +61,17 @@ def get_group_title(ch):
     # ✅ Sky ครอบคลุมมากขึ้น
     if "sky" in name:
         group = "Sky"
+    # ✅ Movie
     elif "movie" in name or genre == "1":
         group = "Movie"
+    # ✅ Sport
     elif "sport" in name or genre == "2":
         group = "Sport"
+    # ✅ News
     elif "news" in name or genre == "3":
         group = "News"
-    elif "doc" in name or "discovery" in name:
+    # ✅ Dokument (รวม Discovery, NatGeo, Animal Planet)
+    elif any(x in name for x in ("doc", "discovery", "natgeo", "natgeowild", "animal planet")):
         group = "Dokument"
 
     # เพิ่ม country ต่อท้ายทุกกลุ่ม
