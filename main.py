@@ -38,47 +38,68 @@ def clean_name(name):
     return " ".join(name.split()).strip()
 
 # --------------------------
-# ฟังก์ชันช่วยตรวจ Dokument
+# Normalize helper
+# --------------------------
+def normalize(name: str) -> str:
+    return (
+        name.lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+        .replace("|", "")
+        .replace(".", "")
+    )
+
+# --------------------------
+# Dokument helper
 # --------------------------
 def is_dokument_channel(name: str) -> bool:
-    """
-    ตรวจสอบว่าช่องเป็น Dokument (สารคดี) หรือไม่
-    รองรับ: Discovery, NatGeo, NatGeo Wild, NetGoWild, Animal Planet
-    """
-    name = name.lower()
+    n = normalize(name)
     dokument_keywords = [
         "doc",
         "discovery",
         "natgeo",
         "natgeowild",
         "netgowild",
-        "animal planet"
+        "animalplanet"
     ]
-    return any(keyword in name for keyword in dokument_keywords)
+    return any(k in n for k in dokument_keywords)
 
+# --------------------------
+# Group title
+# --------------------------
 def get_group_title(ch):
-    """แยกประเภทช่องโดยไม่ต่อท้าย country"""
+    """แยกประเภทช่อง (ไม่ต่อท้าย country)"""
 
-    name = ch.get("name", "").lower()
+    raw_name = ch.get("name", "")
+    n = normalize(raw_name)
     genre = str(ch.get("tv_genre_id", "")).lower()
 
-    # ตรวจประเภทช่อง
     group = "Live TV"
 
-    if "sky" in name:
+    # ✅ Sky
+    if "sky" in n:
         group = "Sky"
-    elif "movie" in name or genre == "1":
+
+    # ✅ DAZN → Sport
+    elif "dazn" in n:
+        group = "Sport"
+
+    # ✅ Movie
+    elif "movie" in n or genre == "1":
         group = "Movie"
-    elif "sport" in name or genre == "2":
+
+    # ✅ Sport
+    elif "sport" in n or genre == "2":
         group = "Sport"
-    elif "dazn" in name:  # ✅ DAZN จัดเป็น Sport
-        group = "Sport"
-    elif is_dokument_channel(name):
+
+    # ✅ Dokument
+    elif is_dokument_channel(raw_name):
         group = "Dokument"
 
     return group
 
-
+# --------------------------
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
     if logo and not logo.startswith("http"):
@@ -130,13 +151,9 @@ def get_channels(portal_url, mac):
 
         channels = []
         if isinstance(data, dict):
-            for v in data.values():
-                if isinstance(v, dict):
-                    channels.append(v)
+            channels.extend(v for v in data.values() if isinstance(v, dict))
         elif isinstance(data, list):
-            for ch in data:
-                if isinstance(ch, dict):
-                    channels.append(ch)
+            channels.extend(ch for ch in data if isinstance(ch, dict))
 
         return channels
     except Exception as e:
@@ -191,6 +208,7 @@ def playlist():
 
     return Response(out, mimetype="audio/x-mpegurl")
 
+# --------------------------
 @app.route("/play")
 def play():
     stream = request.args.get("cmd")
@@ -232,6 +250,7 @@ def play():
         headers={"Cache-Control": "no-cache"}
     )
 
+# --------------------------
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -239,4 +258,3 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
-
