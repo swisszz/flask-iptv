@@ -37,6 +37,25 @@ def clean_name(name):
         name = name.replace(b, "")
     return " ".join(name.split()).strip()
 
+# --------------------------
+# ฟังก์ชันช่วยตรวจ Dokument
+# --------------------------
+def is_dokument_channel(name: str) -> bool:
+    """
+    ตรวจสอบว่าช่องเป็น Dokument (สารคดี) หรือไม่
+    รองรับ: Discovery, NatGeo, NatGeo Wild, NetGoWild, Animal Planet
+    """
+    name = name.lower()
+    dokument_keywords = [
+        "doc",
+        "discovery",
+        "natgeo",
+        "natgeowild",
+        "netgowild",
+        "animal planet"
+    ]
+    return any(keyword in name for keyword in dokument_keywords)
+
 def get_group_title(ch):
     """แยกประเภทช่องโดยไม่ต่อท้าย country"""
 
@@ -46,24 +65,18 @@ def get_group_title(ch):
     # ตรวจประเภทช่อง
     group = "Live TV"
 
-    # ✅ Sky ครอบคลุมมากขึ้น
     if "sky" in name:
         group = "Sky"
-    # ✅ Movie
     elif "movie" in name or genre == "1":
         group = "Movie"
-    # ✅ Sport
     elif "sport" in name or genre == "2":
         group = "Sport"
-    # ✅ News
     elif "news" in name or genre == "3":
-        group = "DAZN"
-    # ✅ Dokument (รวม Discovery, NatGeo, Animal Planet)
-    elif any(x in name for x in ("doc", "discovery", "natgeo", "natgeowild", "animal planet")):
+        group = "News"
+    elif is_dokument_channel(name):
         group = "Dokument"
 
     return group
-
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
@@ -177,7 +190,6 @@ def playlist():
 
     return Response(out, mimetype="audio/x-mpegurl")
 
-# --------------------------
 @app.route("/play")
 def play():
     stream = request.args.get("cmd")
@@ -219,7 +231,6 @@ def play():
         headers={"Cache-Control": "no-cache"}
     )
 
-# --------------------------
 @app.route("/")
 def home():
     return "Live TV Proxy running"
@@ -227,5 +238,3 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
-
-
