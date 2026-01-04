@@ -1,5 +1,5 @@
 from flask import Flask, Response, request
-import requests, json, random
+import requests, json
 from urllib.parse import quote_plus, urlparse
 
 app = Flask(__name__)
@@ -9,6 +9,8 @@ app = Flask(__name__)
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
+# ปล่อย EPG ว่างหรือใส่ URL ก็ได้
+EPG_URL = ""  # "" หมายถึงไม่ใช้ EPG
 
 # --------------------------
 # Utils
@@ -27,8 +29,36 @@ def is_valid_stream_url(url):
         return False
 
 def get_channel_id(name, mac):
-    safe = "".join(c for c in name if c.isalnum())
+    safe = "".join(c for c in name.lower() if c.isalnum())
     return f"{safe}_{mac.replace(':','')}"
+
+def clean_name(name):
+    bad = ["HD", "FHD", "UHD", "TH", "[", "]", "(", ")"]
+    for b in bad:
+        name = name.replace(b, "")
+    return " ".join(name.split()).strip()
+
+def get_group_title(ch):
+    """แยกประเภท + ประเทศ"""
+    genre = str(ch.get("tv_genre_id", "")).lower()
+    name = ch.get("name", "").lower()
+    country = ch.get("country", "").upper() if ch.get("country") else ""
+
+    group = "Live TV"
+
+    if "movie" in name or genre in ("1",):
+        group = "Movie"
+    elif "sport" in name or genre in ("2",):
+        group = "Sport"
+    elif "news" in name or genre in ("3",):
+        group = "News"
+    elif "doc" in name or "discovery" in name:
+        group = "Dokument"
+
+    if country:
+        group = f"{group} - {country}"
+
+    return group
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
@@ -50,10 +80,6 @@ def extract_stream(cmd):
 # Token helper
 # --------------------------
 def get_token():
-    """
-    คืนค่า (ชื่อ token, ค่า token) อันแรกที่เจอ
-    รองรับ token, t, auth
-    """
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
         if value:
@@ -80,28 +106,20 @@ def get_channels(portal_url, mac):
             timeout=10
         )
         r.raise_for_status()
-        json_data = r.json()
-        js_data = json_data.get("js", {})
-        data = js_data.get("data", [])
+        js = r.json().get("js", {})
+        data = js.get("data", [])
 
         channels = []
-
-        # ตรวจชนิด data
         if isinstance(data, dict):
-            for k, v in data.items():
+            for v in data.values():
                 if isinstance(v, dict):
                     channels.append(v)
-                elif isinstance(v, list) and len(v) >= 2:
-                    channels.append({"name": v[0], "cmd": v[1]})
         elif isinstance(data, list):
             for ch in data:
                 if isinstance(ch, dict):
                     channels.append(ch)
-                elif isinstance(ch, list) and len(ch) >= 2:
-                    channels.append({"name": ch[0], "cmd": ch[1]})
 
         return channels
-
     except Exception as e:
         app.logger.error(f"get_channels error: {e}")
         return []
@@ -118,18 +136,23 @@ def playlist():
         return f"MAC list error: {e}", 500
 
     token_key, token_value = get_token()
-    out = "#EXTM3U\n"
+    out = f'#EXTM3U{" x-tvg-url=\"" + EPG_URL + "\"" if EPG_URL else ""}\n'
 
     for portal, macs in data.items():
         if not macs:
             continue
-
-        mac = macs[0]  # ใช้ MAC เดียว (ไม่ random)
+        mac = macs[0]
 
         for ch in get_channels(portal, mac):
             stream = extract_stream(ch.get("cmd"))
             if not stream:
                 continue
+
+            name_raw = ch.get("name", "Live")
+            name = clean_name(name_raw)
+            group = get_group_title(ch)
+            logo = get_channel_logo(ch, portal)
+            logo_attr = f' tvg-logo="{logo}"' if logo else ""
 
             play_url = (
                 f"http://{request.host}/play"
@@ -141,20 +164,15 @@ def playlist():
             if token_value:
                 play_url += f"&{token_key}={quote_plus(token_value)}"
 
-            name = ch.get("name", "Live")
-            logo = get_channel_logo(ch, portal)
-            logo_attr = f' tvg-logo="{logo}"' if logo else ""
-
             out += (
                 f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
-                f'tvg-name="{name}"{logo_attr} group-title="Live TV",{name}\n'
+                f'tvg-name="{name}"{logo_attr} group-title="{group}",{name}\n'
                 f'{play_url}\n'
             )
 
     return Response(out, mimetype="audio/x-mpegurl")
 
-
-
+# --------------------------
 @app.route("/play")
 def play():
     stream = request.args.get("cmd")
@@ -166,9 +184,7 @@ def play():
 
     headers = {
         "User-Agent": USER_AGENT,
-        "Cookie": f"mac={mac}",
-        "Accept": "*/*",
-        "Connection": "keep-alive"
+        "Cookie": f"mac={mac}"
     }
 
     params = {}
@@ -188,31 +204,21 @@ def play():
         return f"Stream error: {e}", 500
 
     def generate():
-        try:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        except Exception:
-            pass
+        for chunk in r.iter_content(chunk_size=8192):
+            if chunk:
+                yield chunk
 
     return Response(
         generate(),
         content_type=r.headers.get("Content-Type", "video/mp2t"),
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
+        headers={"Cache-Control": "no-cache"}
     )
 
-
+# --------------------------
 @app.route("/")
 def home():
     return "Live TV Proxy running"
 
-
-# --------------------------
-# Run
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
-
