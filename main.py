@@ -1,13 +1,30 @@
 from flask import Flask, Response, request
 import requests, json
 from urllib.parse import quote_plus, urlparse
+import os  # เพิ่มสำหรับ Environment Variable
 
 app = Flask(__name__)
 
 # --------------------------
 # Config
 # --------------------------
-MACLIST_FILE = "maclist.json"
+# อ่าน MAC จาก Environment Variable ก่อน ถ้าไม่มีถึงอ่านไฟล์
+mac_env = os.getenv("MACLIST")
+if mac_env:
+    try:
+        MACLIST_DATA = json.loads(mac_env)
+    except Exception as e:
+        print(f"Error parsing MACLIST env: {e}")
+        MACLIST_DATA = {}
+else:
+    MACLIST_FILE = "maclist.json"
+    try:
+        with open(MACLIST_FILE, encoding="utf-8") as f:
+            MACLIST_DATA = json.load(f)
+    except Exception as e:
+        print(f"Error loading maclist.json: {e}")
+        MACLIST_DATA = {}
+
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 EPG_URL = ""  # ใส่ URL EPG หรือปล่อยว่าง
 
@@ -77,23 +94,14 @@ def get_group_title(ch):
 
     group = "Live TV"
 
-    # ✅ Sky
     if "sky" in n:
         group = "Sky"
-
-    # ✅ DAZN → Sport
     elif "dazn" in n:
         group = "Sport"
-
-    # ✅ Movie
     elif "movie" in n or genre == "1":
         group = "Movie"
-
-    # ✅ Sport
     elif "sport" in n or genre == "2":
         group = "Sport"
-
-    # ✅ Dokument
     elif is_dokument_channel(raw_name):
         group = "Dokument"
 
@@ -165,11 +173,7 @@ def get_channels(portal_url, mac):
 # --------------------------
 @app.route("/playlist.m3u")
 def playlist():
-    try:
-        with open(MACLIST_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        return f"MAC list error: {e}", 500
+    data = MACLIST_DATA  # ✅ ใช้ Environment Variable หรือไฟล์เดิม
 
     token_key, token_value = get_token()
     out = f'#EXTM3U{" x-tvg-url=\"" + EPG_URL + "\"" if EPG_URL else ""}\n'
