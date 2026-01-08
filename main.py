@@ -1,14 +1,16 @@
-from flask import Flask, Response, request
-import requests, json
+from flask import Flask, Response, request, jsonify
+import requests, json, time
 from urllib.parse import quote_plus, urlparse
-import os  # เพิ่มสำหรับ Environment Variable
+import os
+
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
 # --------------------------
 # Config
 # --------------------------
-# อ่าน MAC จาก Environment Variable ก่อน ถ้าไม่มีถึงอ่านไฟล์
 mac_env = os.getenv("MACLIST")
 if mac_env:
     try:
@@ -26,7 +28,31 @@ else:
         MACLIST_DATA = {}
 
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-EPG_URL = ""  # ใส่ URL EPG หรือปล่อยว่าง
+EPG_URL = ""
+
+# --------------------------
+# Requests session + FAST retry
+# --------------------------
+session = requests.Session()
+
+retry = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    backoff_factor=0.3,
+    status_forcelist=[500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+
+adapter = HTTPAdapter(max_retries=retry)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
+# --------------------------
+# Cache
+# --------------------------
+CHANNEL_CACHE = {}
+CACHE_TTL = 600  # 10 นาที
 
 # --------------------------
 # Utils
@@ -54,9 +80,6 @@ def clean_name(name):
         name = name.replace(b, "")
     return " ".join(name.split()).strip()
 
-# --------------------------
-# Normalize helper
-# --------------------------
 def normalize(name: str) -> str:
     return (
         name.lower()
@@ -67,47 +90,30 @@ def normalize(name: str) -> str:
         .replace(".", "")
     )
 
-# --------------------------
-# Dokument helper
-# --------------------------
 def is_dokument_channel(name: str) -> bool:
     n = normalize(name)
-    dokument_keywords = [
-        "doc",
-        "discovery",
-        "natgeo",
-        "natgeowild",
-        "netgowild",
-        "animalplanet"
-    ]
-    return any(k in n for k in dokument_keywords)
+    return any(k in n for k in [
+        "doc", "discovery", "natgeo",
+        "natgeowild", "netgowild", "animalplanet"
+    ])
 
-# --------------------------
-# Group title
-# --------------------------
 def get_group_title(ch):
-    """แยกประเภทช่อง (ไม่ต่อท้าย country)"""
-
-    raw_name = ch.get("name", "")
-    n = normalize(raw_name)
+    raw = ch.get("name", "")
+    n = normalize(raw)
     genre = str(ch.get("tv_genre_id", "")).lower()
 
-    group = "Live TV"
-
     if "sky" in n:
-        group = "Sky"
-    elif "dazn" in n:
-        group = "Sport"
-    elif "movie" in n or genre == "1":
-        group = "Movie"
-    elif "sport" in n or genre == "2":
-        group = "Sport"
-    elif is_dokument_channel(raw_name):
-        group = "Dokument"
+        return "Sky"
+    if "dazn" in n:
+        return "Sport"
+    if "movie" in n or genre == "1":
+        return "Movie"
+    if "sport" in n or genre == "2":
+        return "Sport"
+    if is_dokument_channel(raw):
+        return "Dokument"
+    return "Live TV"
 
-    return group
-
-# --------------------------
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
     if logo and not logo.startswith("http"):
@@ -117,16 +123,12 @@ def get_channel_logo(channel, portal):
 def extract_stream(cmd):
     if not cmd:
         return None
-    cmd = cmd.replace("ffmpeg", "").strip()
-    cmd = cmd.split("|")[0]
+    cmd = cmd.replace("ffmpeg", "").split("|")[0]
     for part in cmd.split():
         if part.startswith(("http://", "https://")):
             return part
     return None
 
-# --------------------------
-# Token helper
-# --------------------------
 def get_token():
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
@@ -135,7 +137,7 @@ def get_token():
     return None, None
 
 # --------------------------
-# Portal
+# Portal loader
 # --------------------------
 def get_channels(portal_url, mac):
     if is_direct_url(portal_url):
@@ -147,49 +149,62 @@ def get_channels(portal_url, mac):
     }
 
     try:
-        r = requests.get(
+        r = session.get(
             f"{portal_url.rstrip('/')}/server/load.php",
             params={"type": "itv", "action": "get_all_channels"},
             headers=headers,
-            timeout=10
+            timeout=5
         )
         r.raise_for_status()
+
         js = r.json().get("js", {})
         data = js.get("data", [])
 
-        channels = []
         if isinstance(data, dict):
-            channels.extend(v for v in data.values() if isinstance(v, dict))
-        elif isinstance(data, list):
-            channels.extend(ch for ch in data if isinstance(ch, dict))
+            return [v for v in data.values() if isinstance(v, dict)]
+        if isinstance(data, list):
+            return [ch for ch in data if isinstance(ch, dict)]
+        return []
 
-        return channels
     except Exception as e:
         app.logger.error(f"get_channels error: {e}")
         return []
+
+# --------------------------
+# Cached version
+# --------------------------
+def get_channels_cached(portal_url, mac):
+    key = f"{portal_url}|{mac}"
+    now = time.time()
+
+    if key in CHANNEL_CACHE:
+        channels, ts = CHANNEL_CACHE[key]
+        if now - ts < CACHE_TTL:
+            return channels
+
+    channels = get_channels(portal_url, mac)
+    CHANNEL_CACHE[key] = (channels, now)
+    return channels
 
 # --------------------------
 # Routes
 # --------------------------
 @app.route("/playlist.m3u")
 def playlist():
-    data = MACLIST_DATA  # ✅ ใช้ Environment Variable หรือไฟล์เดิม
-
     token_key, token_value = get_token()
     out = f'#EXTM3U{" x-tvg-url=\"" + EPG_URL + "\"" if EPG_URL else ""}\n'
 
-    for portal, macs in data.items():
+    for portal, macs in MACLIST_DATA.items():
         if not macs:
             continue
         mac = macs[0]
 
-        for ch in get_channels(portal, mac):
+        for ch in get_channels_cached(portal, mac):
             stream = extract_stream(ch.get("cmd"))
             if not stream:
                 continue
 
-            name_raw = ch.get("name", "Live")
-            name = clean_name(name_raw)
+            name = clean_name(ch.get("name", "Live"))
             group = get_group_title(ch)
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
@@ -213,6 +228,33 @@ def playlist():
     return Response(out, mimetype="audio/x-mpegurl")
 
 # --------------------------
+# 🔥 Refresh cache
+# --------------------------
+@app.route("/refresh")
+def refresh_cache():
+    portal = request.args.get("portal")
+
+    if portal:
+        removed = [
+            k for k in list(CHANNEL_CACHE.keys())
+            if k.startswith(portal)
+        ]
+        for k in removed:
+            CHANNEL_CACHE.pop(k, None)
+
+        return jsonify({
+            "status": "ok",
+            "message": f"Cache cleared for portal: {portal}",
+            "removed": len(removed)
+        })
+
+    CHANNEL_CACHE.clear()
+    return jsonify({
+        "status": "ok",
+        "message": "All cache cleared"
+    })
+
+# --------------------------
 @app.route("/play")
 def play():
     stream = request.args.get("cmd")
@@ -232,19 +274,19 @@ def play():
         params[token_key] = token_value
 
     try:
-        r = requests.get(
+        r = session.get(
             stream,
             headers=headers,
             params=params,
             stream=True,
-            timeout=(5, None)
+            timeout=(3, None)
         )
         r.raise_for_status()
     except Exception as e:
         return f"Stream error: {e}", 500
 
     def generate():
-        for chunk in r.iter_content(chunk_size=8192):
+        for chunk in r.iter_content(8192):
             if chunk:
                 yield chunk
 
