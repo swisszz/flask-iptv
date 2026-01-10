@@ -1,4 +1,4 @@
-from flask import Flask, Response, request, jsonify, redirect
+from flask import Flask, Response, request, jsonify
 import requests, json, time
 from urllib.parse import quote_plus, urlparse
 import os
@@ -31,9 +31,10 @@ USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 EPG_URL = ""
 
 # --------------------------
-# Requests session + retry
+# Requests session + FAST retry
 # --------------------------
 session = requests.Session()
+
 retry = Retry(
     total=2,
     connect=2,
@@ -42,6 +43,7 @@ retry = Retry(
     status_forcelist=[500, 502, 503, 504],
     allowed_methods=["GET"]
 )
+
 adapter = HTTPAdapter(max_retries=retry)
 session.mount("http://", adapter)
 session.mount("https://", adapter)
@@ -50,7 +52,6 @@ session.mount("https://", adapter)
 # Cache
 # --------------------------
 CHANNEL_CACHE = {}
-VOD_CACHE = {}
 CACHE_TTL = 600  # 10 นาที
 
 # --------------------------
@@ -101,9 +102,6 @@ def get_group_title(ch):
     n = normalize(raw)
     genre = str(ch.get("tv_genre_id", "")).lower()
 
-    # Adult group
-    if any(k in n for k in ["adult", "xxx", "18", "porn", "sex"]):
-        return "18+ Adult"
     if "sky" in n:
         return "Sky"
     if "dazn" in n:
@@ -189,50 +187,6 @@ def get_channels_cached(portal_url, mac):
     return channels
 
 # --------------------------
-# Adult VOD loader
-# --------------------------
-def get_adult_vods(portal, mac):
-    key = f"adult|{portal}|{mac}"
-    now = time.time()
-
-    if key in VOD_CACHE and now - VOD_CACHE[key][1] < CACHE_TTL:
-        return VOD_CACHE[key][0]
-
-    movies = []
-
-    try:
-        r = session.get(
-            f"{portal.rstrip('/')}/server/load.php",
-            params={"type": "vod", "action": "get_categories"},
-            headers={"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"},
-            timeout=5
-        )
-
-        for cat in r.json().get("js", []):
-            title = cat.get("title", "")
-            if not any(k in title.lower() for k in ["adult", "xxx", "18", "porn", "sex"]):
-                continue
-
-            r2 = session.get(
-                f"{portal.rstrip('/')}/server/load.php",
-                params={
-                    "type": "vod",
-                    "action": "get_ordered_list",
-                    "category": cat.get("id")
-                },
-                headers={"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"},
-                timeout=5
-            )
-
-            movies += r2.json().get("js", {}).get("data", [])
-
-    except Exception as e:
-        app.logger.error(f"get_adult_vods error: {e}")
-
-    VOD_CACHE[key] = (movies, now)
-    return movies
-
-# --------------------------
 # Routes
 # --------------------------
 @app.route("/playlist.m3u")
@@ -245,7 +199,6 @@ def playlist():
             continue
         mac = macs[0]
 
-        # --- Live TV ---
         for ch in get_channels_cached(portal, mac):
             stream = extract_stream(ch.get("cmd"))
             if not stream:
@@ -272,22 +225,35 @@ def playlist():
                 f'{play_url}\n'
             )
 
-        # --- Adult VOD ---
-        for m in get_adult_vods(portal, mac):
-            stream = extract_stream(m.get("cmd"))
-            if not stream:
-                continue
-
-            name = clean_name(m.get("name", "Adult"))
-            out += (
-                f'#EXTINF:-1 group-title="18+ Adult",{name}\n'
-                f'http://{request.host}/vod?url={quote_plus(stream)}\n'
-            )
-
     return Response(out, mimetype="audio/x-mpegurl")
 
 # --------------------------
-# Play route (proxy)
+# 🔥 Refresh cache
+# --------------------------
+@app.route("/refresh")
+def refresh_cache():
+    portal = request.args.get("portal")
+
+    if portal:
+        removed = [
+            k for k in list(CHANNEL_CACHE.keys())
+            if k.startswith(portal)
+        ]
+        for k in removed:
+            CHANNEL_CACHE.pop(k, None)
+
+        return jsonify({
+            "status": "ok",
+            "message": f"Cache cleared for portal: {portal}",
+            "removed": len(removed)
+        })
+
+    CHANNEL_CACHE.clear()
+    return jsonify({
+        "status": "ok",
+        "message": "All cache cleared"
+    })
+
 # --------------------------
 @app.route("/play")
 def play():
@@ -331,55 +297,9 @@ def play():
     )
 
 # --------------------------
-# VOD redirect
-# --------------------------
-@app.route("/vod")
-def vod():
-    url = request.args.get("url")
-    if not is_valid_stream_url(url):
-        return "Invalid VOD", 400
-    return redirect(url, code=302)
-
-# --------------------------
-# Refresh cache
-# --------------------------
-@app.route("/refresh")
-def refresh_cache():
-    portal = request.args.get("portal")
-
-    if portal:
-        removed = [
-            k for k in list(CHANNEL_CACHE.keys())
-            if k.startswith(portal)
-        ]
-        for k in removed:
-            CHANNEL_CACHE.pop(k, None)
-
-        removed_vod = [
-            k for k in list(VOD_CACHE.keys())
-            if k.startswith(f"adult|{portal}")
-        ]
-        for k in removed_vod:
-            VOD_CACHE.pop(k, None)
-
-        return jsonify({
-            "status": "ok",
-            "message": f"Cache cleared for portal: {portal}",
-            "removed_channels": len(removed),
-            "removed_vod": len(removed_vod)
-        })
-
-    CHANNEL_CACHE.clear()
-    VOD_CACHE.clear()
-    return jsonify({
-        "status": "ok",
-        "message": "All cache cleared"
-    })
-
-# --------------------------
 @app.route("/")
 def home():
-    return "Live TV + Adult Proxy running"
+    return "Live TV Proxy running"
 
 # --------------------------
 if __name__ == "__main__":
