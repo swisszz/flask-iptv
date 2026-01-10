@@ -102,6 +102,10 @@ def get_group_title(ch):
     n = normalize(raw)
     genre = str(ch.get("tv_genre_id", "")).lower()
 
+    # 18+ / Adult
+    if "adult" in n or "xxx" in n or "18" in n or "porn" in n or "sex" in n:
+        return "18+ Adult"
+
     if "sky" in n:
         return "Sky"
     if "dazn" in n:
@@ -113,6 +117,7 @@ def get_group_title(ch):
     if is_dokument_channel(raw):
         return "Dokument"
     return "Live TV"
+
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
@@ -304,3 +309,4 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
