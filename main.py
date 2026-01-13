@@ -81,9 +81,11 @@ def get_group_title(name):
     return "Live TV"
 
 
-
-
+# --------------------------
+# Portal
+# --------------------------
 def get_token():
+    # ดึง token จาก query string แต่จะไม่ใส่ลง playlist
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
         if value:
@@ -91,9 +93,6 @@ def get_token():
     return None, None
 
 
-# --------------------------
-# Portal
-# --------------------------
 def get_channels(portal_url, mac):
     if is_direct_url(portal_url):
         return [{"name": "Live Stream", "cmd": portal_url}]
@@ -157,13 +156,13 @@ def playlist():
             if not stream:
                 continue
 
+            # ใส่ token เฉพาะที่ /play เท่านั้น
             play_url = (
                 f"http://{request.host}/play"
                 f"?portal={quote_plus(portal)}"
                 f"&mac={mac}"
                 f"&cmd={quote_plus(stream)}"
             )
-
             if token_value:
                 play_url += f"&{token_key}={quote_plus(token_value)}"
 
@@ -235,6 +234,3 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
-
-
-
