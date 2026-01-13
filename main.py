@@ -55,6 +55,7 @@ def extract_stream(cmd):
 
 
 group = get_group_title_auto(name)
+
 # --------------------------
 # Auto Grouping
 # --------------------------
@@ -235,4 +236,5 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
