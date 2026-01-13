@@ -54,31 +54,32 @@ def extract_stream(cmd):
     return None
 
 
-def get_group_title(name):
-    n = name.lower()
-    if "sky" in n:
-        return "Skysport"
-    if "sport" in n or "football" in n or "bein" in n:
-        return "Sport"
-    if "movie" in n or "cinema" in n or "hbo" in n:
-        return "Movies"
-    if "music" in n or "mtv" in n:
-        return "Music"
-    if (
-        "doc" in n
-        or "discovery" in n
-        or "natgeo" in n
-        or "netgo" in n
-        or "wild" in n
-        or "history" in n
-        or "animal" in n
-        or "planet" in n
-        or "earth" in n
-        or "bbc earth" in n
-        or "bbcearth" in n
-    ):
-        return "Dokument"
-    return "Live TV"
+group = get_group_title_auto(name)
+# --------------------------
+# Auto Grouping
+# --------------------------
+GROUP_KEYWORDS = {
+    "Sport": ["sport", "football", "soccer", "f1", "bein", "กีฬา", "ฟุตบอล", "บอล"],
+    "Movies": ["movie", "cinema", "hbo", "star", "หนัง", "ภาพยนตร์", "ซีรีส์"],
+    "Music": ["music", "mtv", "radio", "เพลง", "ดนตรี"],
+    "Dokumentary": ["doc", "discovery", "natgeo", "history", "wild", "earth", "สารคดี", "ธรรมชาติ"],
+    "News": ["news", "ข่าว", "new"],
+    "Kids": ["cartoon", "kids", "เด็ก", "การ์ตูน"],
+    "Thai": ["thailand", "ไทย", "ช่องไทย", "thaichannel"]
+}
+
+def get_group_title_auto(name: str) -> str:
+    """
+    จัดกลุ่มช่องอัตโนมัติจากชื่อช่อง
+    รองรับภาษาอังกฤษและไทย
+    """
+    n = name.lower()  # ทำ lowercase เพื่อเช็คง่าย
+    for group, keywords in GROUP_KEYWORDS.items():
+        for kw in keywords:
+            if kw in n:
+                return group
+    return "Live TV"  # default
+
 
 
 # --------------------------
@@ -234,3 +235,4 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
