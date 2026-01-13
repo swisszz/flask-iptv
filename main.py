@@ -64,9 +64,16 @@ def get_group_title(name):
         return "Movies"
     if "music" in n or "mtv" in n:
         return "Music"
-    if "doc" in n or "discovery" in n or "natgeo" in n:
+    if (
+        "doc" in n
+        or "discovery" in n
+        or "natgeo" in n
+        or "netgo" in n
+        or "wild" in n
+    ):
         return "Dokument"
     return "Live TV"
+
 
 
 def get_token():
@@ -221,3 +228,4 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
