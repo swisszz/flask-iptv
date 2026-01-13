@@ -5,10 +5,6 @@ from flask import Flask, Response, request
 import requests, json
 from urllib.parse import quote_plus, urlparse
 
-from flask import Flask, Response, request
-import requests, json
-from urllib.parse import quote_plus, urlparse
-
 app = Flask(__name__)
 
 # --------------------------
@@ -250,4 +246,5 @@ def home():
 # --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
 
