@@ -2,7 +2,7 @@ from gevent import monkey
 monkey.patch_all()
 
 from flask import Flask, Response, request
-import requests, json
+import requests, json, time
 from urllib.parse import quote_plus, urlparse
 
 app = Flask(__name__)
@@ -54,34 +54,22 @@ def extract_stream(cmd):
     return None
 
 
-# --------------------------
-# Group by channel name (METHOD 1)
-# --------------------------
 def get_group_title(name):
     n = name.lower()
-
     if "sky" in n:
         return "Skysport"
-    elif "sport" in n or "football" in n or "bein" in n:
+    if "sport" in n or "football" in n or "bein" in n:
         return "Sport"
-    elif "movie" in n or "cinema" in n or "hbo" in n:
+    if "movie" in n or "cinema" in n or "hbo" in n:
         return "Movies"
-    elif "music" in n or "mtv" in n:
+    if "music" in n or "mtv" in n:
         return "Music"
-    elif "doc" in n or "discovery" in n or "natgeo" in n:
+    if "doc" in n or "discovery" in n or "natgeo" in n:
         return "Dokument"
-    else:
-        return "Live TV"
+    return "Live TV"
 
 
-# --------------------------
-# Token helper
-# --------------------------
 def get_token():
-    """
-    คืนค่า (ชื่อ token, ค่า token) อันแรกที่เจอ
-    รองรับ token, t, auth
-    """
     for key in ("token", "t", "auth"):
         value = request.args.get(key)
         if value:
@@ -109,10 +97,8 @@ def get_channels(portal_url, mac):
             timeout=10
         )
         r.raise_for_status()
-        json_data = r.json()
-        js_data = json_data.get("js", {})
-        data = js_data.get("data", [])
 
+        data = r.json().get("js", {}).get("data", [])
         channels = []
 
         if isinstance(data, dict):
@@ -121,7 +107,6 @@ def get_channels(portal_url, mac):
                     channels.append(v)
                 elif isinstance(v, list) and len(v) >= 2:
                     channels.append({"name": v[0], "cmd": v[1]})
-
         elif isinstance(data, list):
             for ch in data:
                 if isinstance(ch, dict):
@@ -141,11 +126,8 @@ def get_channels(portal_url, mac):
 # --------------------------
 @app.route("/playlist.m3u")
 def playlist():
-    try:
-        with open(MACLIST_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        return f"MAC list error: {e}", 500
+    with open(MACLIST_FILE, encoding="utf-8") as f:
+        data = json.load(f)
 
     token_key, token_value = get_token()
     out = "#EXTM3U\n"
@@ -154,7 +136,7 @@ def playlist():
         if not macs:
             continue
 
-        mac = macs[0]  # ใช้ MAC เดียว
+        mac = macs[0]
 
         for ch in get_channels(portal, mac):
             stream = extract_stream(ch.get("cmd"))
@@ -174,7 +156,6 @@ def playlist():
             name = ch.get("name", "Live")
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
-
             group = get_group_title(name)
 
             out += (
@@ -195,10 +176,11 @@ def play():
     if not stream or not is_valid_stream_url(stream):
         return "Invalid stream URL", 400
 
+    session = requests.Session()
+
     headers = {
         "User-Agent": USER_AGENT,
         "Cookie": f"mac={mac}",
-        "Accept": "*/*",
         "Connection": "keep-alive"
     }
 
@@ -206,32 +188,32 @@ def play():
     if token_value:
         params[token_key] = token_value
 
-    try:
-        r = requests.get(
-            stream,
-            headers=headers,
-            params=params,
-            stream=True,
-            timeout=(5, None)
-        )
-        r.raise_for_status()
-    except Exception as e:
-        return f"Stream error: {e}", 500
-
     def generate():
-        try:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        except Exception:
-            pass
+        while True:
+            try:
+                r = session.get(
+                    stream,
+                    headers=headers,
+                    params=params,
+                    stream=True,
+                    timeout=(5, 30)
+                )
+
+                for chunk in r.iter_content(chunk_size=16384):
+                    if chunk:
+                        yield chunk
+
+            except Exception as e:
+                app.logger.warning(f"Reconnect stream: {e}")
+                time.sleep(0.5)
 
     return Response(
         generate(),
-        content_type=r.headers.get("Content-Type", "video/mp2t"),
+        content_type="video/mp2t",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
         }
     )
 
@@ -239,12 +221,3 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
-
-
-# --------------------------
-# Run
-# --------------------------
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, threaded=True)
-
-
