@@ -54,8 +54,6 @@ def extract_stream(cmd):
     return None
 
 
-group = get_group_title_auto(name)
-
 # --------------------------
 # Auto Grouping
 # --------------------------
@@ -80,8 +78,6 @@ def get_group_title_auto(name: str) -> str:
             if kw in n:
                 return group
     return "Live TV"  # default
-
-
 
 # --------------------------
 # Portal
@@ -135,7 +131,6 @@ def get_channels(portal_url, mac):
         app.logger.error(f"get_channels error: {e}")
         return []
 
-
 # --------------------------
 # Routes
 # --------------------------
@@ -171,7 +166,7 @@ def playlist():
             name = ch.get("name", "Live")
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
-            group = get_group_title(name)
+            group = get_group_title_auto(name)  # <-- แก้ตรงนี้
 
             out += (
                 f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
@@ -236,5 +231,3 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
-
-
