@@ -1,5 +1,5 @@
 from flask import Flask, Response, request
-import requests, json, random
+import requests, json
 from urllib.parse import quote_plus, urlparse
 
 app = Flask(__name__)
@@ -19,6 +19,7 @@ def is_direct_url(url):
     u = url.lower()
     return "live.php" in u or "/ch/" in u or "localhost" in u
 
+
 def is_valid_stream_url(url):
     try:
         u = urlparse(url)
@@ -26,15 +27,18 @@ def is_valid_stream_url(url):
     except Exception:
         return False
 
+
 def get_channel_id(name, mac):
     safe = "".join(c for c in name if c.isalnum())
     return f"{safe}_{mac.replace(':','')}"
+
 
 def get_channel_logo(channel, portal):
     logo = channel.get("logo") or channel.get("icon") or ""
     if logo and not logo.startswith("http"):
         logo = portal.rstrip("/") + "/" + logo.lstrip("/")
     return logo
+
 
 def extract_stream(cmd):
     if not cmd:
@@ -45,6 +49,27 @@ def extract_stream(cmd):
         if part.startswith(("http://", "https://")):
             return part
     return None
+
+
+# --------------------------
+# Group by channel name (METHOD 1)
+# --------------------------
+def get_group_title(name):
+    n = name.lower()
+
+    if "sky" in n:
+        return "Skysport"
+    elif "sport" in n or "football" in n or "bein" in n:
+        return "Sport"
+    elif "movie" in n or "cinema" in n or "hbo" in n:
+        return "Movies"
+    elif "music" in n or "mtv" in n:
+        return "Music"
+    elif "doc" in n or "discovery" in n or "natgeo" in n:
+        return "Dokument"
+    else:
+        return "Live TV"
+
 
 # --------------------------
 # Token helper
@@ -59,6 +84,7 @@ def get_token():
         if value:
             return key, value
     return None, None
+
 
 # --------------------------
 # Portal
@@ -86,13 +112,13 @@ def get_channels(portal_url, mac):
 
         channels = []
 
-        # ตรวจชนิด data
         if isinstance(data, dict):
-            for k, v in data.items():
+            for v in data.values():
                 if isinstance(v, dict):
                     channels.append(v)
                 elif isinstance(v, list) and len(v) >= 2:
                     channels.append({"name": v[0], "cmd": v[1]})
+
         elif isinstance(data, list):
             for ch in data:
                 if isinstance(ch, dict):
@@ -105,6 +131,7 @@ def get_channels(portal_url, mac):
     except Exception as e:
         app.logger.error(f"get_channels error: {e}")
         return []
+
 
 # --------------------------
 # Routes
@@ -124,7 +151,7 @@ def playlist():
         if not macs:
             continue
 
-        mac = macs[0]  # ใช้ MAC เดียว (ไม่ random)
+        mac = macs[0]  # ใช้ MAC เดียว
 
         for ch in get_channels(portal, mac):
             stream = extract_stream(ch.get("cmd"))
@@ -145,14 +172,15 @@ def playlist():
             logo = get_channel_logo(ch, portal)
             logo_attr = f' tvg-logo="{logo}"' if logo else ""
 
+            group = get_group_title(name)
+
             out += (
                 f'#EXTINF:-1 tvg-id="{get_channel_id(name, mac)}" '
-                f'tvg-name="{name}"{logo_attr} group-title="Live TV",{name}\n'
+                f'tvg-name="{name}"{logo_attr} group-title="{group}",{name}\n'
                 f'{play_url}\n'
             )
 
     return Response(out, mimetype="audio/x-mpegurl")
-
 
 
 @app.route("/play")
