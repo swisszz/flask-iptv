@@ -70,9 +70,15 @@ def get_group_title(name):
         or "natgeo" in n
         or "netgo" in n
         or "wild" in n
+        or "history" in n
+        or "animal" in n
+        or "bbc earth" in n
+        or "bbcearth" in n
+        or "earth" in n
     ):
         return "Dokument"
     return "Live TV"
+
 
 
 
@@ -228,4 +234,5 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
