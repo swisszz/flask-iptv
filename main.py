@@ -57,6 +57,8 @@ def extract_stream(cmd):
 # --------------------------
 # Auto Grouping
 # --------------------------
+import re
+
 GROUP_KEYWORDS = {
     "Sport": ["sport", "football", "soccer", "f1", "bein", "กีฬา", "ฟุตบอล", "บอล"],
     "Movies": ["movie", "cinema", "hbo", "star", "หนัง", "ภาพยนตร์", "ซีรีส์"],
@@ -64,20 +66,46 @@ GROUP_KEYWORDS = {
     "Dokumentary": ["doc", "discovery", "natgeo", "history", "wild", "earth", "สารคดี", "ธรรมชาติ"],
     "News": ["news", "ข่าว", "new"],
     "Kids": ["cartoon", "kids", "เด็ก", "การ์ตูน"],
-    "Thai": ["thailand", "ไทย", "ช่องไทย", "thaichannel"]
+
+    # เพิ่ม keyword ไทย
+    "Thai": [
+        "thailand",
+        "thailande",
+        "ไทย",
+        "ช่อง",
+        "thaichannel"
+    ]
 }
+
+def normalize_name(name: str) -> str:
+    # เหลือเฉพาะตัวอักษร/ตัวเลข (ไทย+อังกฤษ)
+    return re.sub(r'[^a-z0-9ก-๙]', '', name.lower())
 
 def get_group_title_auto(name: str) -> str:
     """
     จัดกลุ่มช่องอัตโนมัติจากชื่อช่อง
-    รองรับภาษาอังกฤษและไทย
+    รองรับ THAILANDE.TH / .TH / TH-CHx
     """
-    n = name.lower()  # ทำ lowercase เพื่อเช็คง่าย
+    raw = name.lower()
+    n = normalize_name(name)
+
+    # --- Thai rules (priority) ---
+    if (
+        "thailand" in n or
+        "thailande" in n or
+        raw.endswith(".th") or
+        n.startswith("th")
+    ):
+        return "Thai"
+
+    # --- Keyword fallback ---
     for group, keywords in GROUP_KEYWORDS.items():
         for kw in keywords:
             if kw in n:
                 return group
-    return "Live TV"  # default
+
+    return "Live TV"
+
 
 # --------------------------
 # Portal
@@ -231,3 +259,4 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
