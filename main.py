@@ -93,7 +93,6 @@ def load_maclist():
         return json.load(f)
 
 def pick_mac(macs, tried_macs=None):
-    """หมุน MAC ภายใน portal"""
     if not macs:
         return None
     if tried_macs is None:
@@ -129,7 +128,7 @@ def get_channels(portal_url, mac):
                     channels.append({"name": ch[0], "cmd": ch[1]})
         return channels
     except Exception as e:
-        app.logger.error(f"get_channels error: {e}")
+        app.logger.error(f"get_channels error for {portal_url}: {e}")
         return []
 
 # --------------------------
@@ -173,56 +172,58 @@ def play():
     maclist = load_maclist()
     session = requests.Session()
 
-    # ลอง portal ก่อน → หมุน MAC ภายใน portal
+    MAX_PORTAL_TRIES = len(maclist)
     tried_portals = set()
-    while len(tried_portals) < len(maclist):
+
+    while len(tried_portals) < MAX_PORTAL_TRIES:
         portal = portal_req or next((p for p in maclist if p not in tried_portals), None)
         if not portal or not maclist.get(portal):
             tried_portals.add(portal)
             continue
-
         tried_portals.add(portal)
-        tried_macs = set()
 
-        while len(tried_macs) < len(maclist[portal]):
+        tried_macs = set()
+        MAX_MAC_TRIES = len(maclist[portal])
+
+        while len(tried_macs) < MAX_MAC_TRIES:
             mac = pick_mac(maclist[portal], tried_macs)
             if not mac:
                 break
             tried_macs.add(mac)
+
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
             params = {}
             if token_value:
                 params[token_key] = token_value
 
             try:
-                # ทดสอบ stream
-                r = session.head(stream, headers=headers, params=params, timeout=5)
-                if r.status_code != 200:
+                r_test = session.get(stream, headers=headers, params=params, stream=True, timeout=(5,5))
+                if r_test.status_code != 200:
+                    app.logger.warning(f"Portal {portal} MAC {mac} returned {r_test.status_code}, trying next MAC")
                     continue
 
-                # ส่ง stream ต่อเนื่อง
                 def generate():
-                    while True:
-                        try:
-                            r = session.get(stream, headers=headers, params=params, stream=True, timeout=(5,30))
-                            for chunk in r.iter_content(chunk_size=16384):
+                    try:
+                        with session.get(stream, headers=headers, params=params, stream=True, timeout=(5,30)) as r_stream:
+                            for chunk in r_stream.iter_content(chunk_size=16384):
                                 if chunk:
                                     yield chunk
-                        except Exception:
-                            break  # ถ้า MAC/portal ล่ม จะลองตัวถัดไป
+                    except Exception as e:
+                        app.logger.warning(f"Stream broken: {e}")
+                        return
 
                 return Response(
                     generate(),
                     content_type="video/mp2t",
-                    headers={"Cache-Control": "no-cache","Connection": "keep-alive","X-Accel-Buffering": "no"}
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
                 )
 
-            except Exception:
-                continue  # ลอง MAC ถัดไป
+            except Exception as e:
+                app.logger.warning(f"Failed MAC {mac} on portal {portal}: {e}")
+                continue
 
     return "All portals failed", 503
 
 @app.route("/")
 def home():
     return "Live TV Proxy running"
-
