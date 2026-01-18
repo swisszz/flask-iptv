@@ -12,9 +12,9 @@ app = Flask(__name__)
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-SESSION_TTL = 86400  # 24 ชั่วโมง
+SESSION_TTL = 21000  # 24 ชั่วโมง
        
-CHANNEL_CACHE_TTL = 900    # 5 นาที
+CHANNEL_CACHE_TTL = 300    # 5 นาที
 
 # --------------------------
 # Global state
@@ -241,6 +241,7 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 
 
