@@ -1,11 +1,14 @@
-from gevent import monkey
+from gevent import monkey, pool, Timeout
 monkey.patch_all()
 
+import gevent
 from flask import Flask, Response, request
 import requests, json, time, random, re
 from urllib.parse import quote_plus, urlparse
+import logging
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # --------------------------
 # Config
@@ -13,17 +16,18 @@ app = Flask(__name__)
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 SESSION_TTL = 86400  # 24 ชั่วโมง
-       
 CHANNEL_CACHE_TTL = 600    # 10 นาที
+MAX_CONCURRENT_REQUESTS = 10  # pool size
 
 # --------------------------
 # Global state
 # --------------------------
 client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen": timestamp}
 channel_cache = {}    # portal -> (timestamp, mac, channels)
+request_pool = pool.Pool(MAX_CONCURRENT_REQUESTS)
 
 # --------------------------
-# Utils
+# Utils (เหมือนเดิม)
 # --------------------------
 def load_maclist():
     with open(MACLIST_FILE, encoding="utf-8") as f:
@@ -98,7 +102,7 @@ def save_mac(client_id, portal, mac):
     client_sessions[client_id] = {"portal": portal, "mac": mac, "last_seen": time.time()}
 
 # --------------------------
-# Portal helpers
+# Portal helpers with Gevent
 # --------------------------
 def pick_mac(macs, tried_macs=None):
     if not macs:
@@ -114,17 +118,18 @@ def get_channels(portal, macs):
         ts, cached_mac, channels = channel_cache[portal]
         if now - ts < CHANNEL_CACHE_TTL:
             return cached_mac, channels
-    # ถ้า cache หมดอายุ → fetch ใหม่
-    random.shuffle(macs)
-    for mac in macs:
+
+    # fetch channels concurrently with timeout
+    def fetch(mac):
         try:
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r = requests.get(
-                f"{portal.rstrip('/')}/server/load.php",
-                params={"type":"itv","action":"get_all_channels"},
-                headers=headers,
-                timeout=10
-            )
+            with Timeout(10, False):  # timeout 10 sec
+                r = requests.get(
+                    f"{portal.rstrip('/')}/server/load.php",
+                    params={"type":"itv","action":"get_all_channels"},
+                    headers=headers,
+                    timeout=10
+                )
             r.raise_for_status()
             data = r.json().get("js", {}).get("data", [])
             channels = []
@@ -141,24 +146,33 @@ def get_channels(portal, macs):
                     elif isinstance(ch, list) and len(ch)>=2:
                         channels.append({"name": ch[0], "cmd": ch[1]})
             if channels:
-                channel_cache[portal] = (now, mac, channels)
                 return mac, channels
         except Exception as e:
             app.logger.warning(f"MAC {mac} fetch channels failed: {e}")
-            continue
+        return None
+
+    jobs = [request_pool.spawn(fetch, mac) for mac in macs]
+    gevent.joinall(jobs, timeout=12)  # max 12 sec wait
+    for job in jobs:
+        if job.value:
+            mac, channels = job.value
+            channel_cache[portal] = (now, mac, channels)
+            return mac, channels
+
     return None, []
 
 # --------------------------
-# Streaming helpers
+# Streaming helpers with Gevent timeout
 # --------------------------
 def stream_response(session, stream, mac):
     headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
     def generate():
         try:
-            with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
-                for chunk in r.iter_content(16384):
-                    if chunk:
-                        yield chunk
+            with Timeout(60, False):  # max 60 sec per stream
+                with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
+                    for chunk in r.iter_content(16384):
+                        if chunk:
+                            yield chunk
         except Exception as e:
             app.logger.warning(f"Stream broken: {e}")
             return
@@ -169,7 +183,7 @@ def stream_response(session, stream, mac):
     )
 
 # --------------------------
-# Routes
+# Routes (เหมือนเดิม)
 # --------------------------
 @app.route("/playlist.m3u")
 def playlist():
@@ -212,27 +226,29 @@ def play():
     mac = get_saved_mac(client_id, portal)
     if mac and mac in macs:
         try:
-            headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
-            if r_test.status_code == 200:
-                save_mac(client_id, portal, mac)
-                return stream_response(session, stream, mac)
+            with Timeout(10, False):
+                headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
+                r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
+                if r_test.status_code == 200:
+                    save_mac(client_id, portal, mac)
+                    return stream_response(session, stream, mac)
         except:
             pass
 
-    # 2️⃣ Random MAC ใหม่
+    # 2️⃣ Random MAC ใหม่ (with timeout)
     tried_macs = set()
-    while len(tried_macs) < len(macs):
+    for _ in range(len(macs)):
         mac = pick_mac(macs, tried_macs)
         if not mac:
             break
         tried_macs.add(mac)
         try:
-            headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
-            if r_test.status_code == 200:
-                save_mac(client_id, portal, mac)
-                return stream_response(session, stream, mac)
+            with Timeout(10, False):
+                headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
+                r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
+                if r_test.status_code == 200:
+                    save_mac(client_id, portal, mac)
+                    return stream_response(session, stream, mac)
         except:
             continue
 
@@ -242,9 +258,5 @@ def play():
 def home():
     return "Live TV Proxy running"
 
-
-
-
-
-
-
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, threaded=True)
