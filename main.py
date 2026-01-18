@@ -1,4 +1,4 @@
-from gevent import monkey, Timeout
+from gevent import monkey
 monkey.patch_all()
 
 from flask import Flask, Response, request
@@ -16,8 +16,6 @@ USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 SESSION_TTL = 3600          # 1 ชั่วโมง
 CHANNEL_CACHE_TTL = 600     # 10 นาที
 STREAM_CHUNK_SIZE = 16*1024
-CHUNK_TIMEOUT = 10          # ถ้าไม่มี chunk ใหม่เกิน 10 วินาที → stop generator
-STREAM_TIMEOUT = 3600       # ดูได้สูงสุด 1 ชั่วโมง
 
 # --------------------------
 # Global state
@@ -26,7 +24,7 @@ client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen":
 channel_cache = {}    # portal -> (timestamp, mac, channels)
 
 # --------------------------
-# Global session + connection pool
+# Global session + connection pool (ใช้แค่ fetch channel)
 # --------------------------
 global_session = requests.Session()
 adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
@@ -159,29 +157,19 @@ def get_channels(portal, macs):
     return None, []
 
 # --------------------------
-# Streaming helper (ลื่นไหลนาน)
+# Streaming helper (ลื่นไหลยาว)
 # --------------------------
-def stream_response(stream_url, mac):
+def stream_response(session, stream_url, mac):
     headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
-
     def generate():
-        last_chunk_time = time.time()
         try:
-            with Timeout(STREAM_TIMEOUT, True):  # generator timeout สูงสุด
-                with global_session.get(stream_url, headers=headers, stream=True, timeout=(5,10)) as r:
-                    for chunk in r.iter_content(STREAM_CHUNK_SIZE):
-                        if chunk:
-                            last_chunk_time = time.time()
-                            yield chunk
-                        elif time.time() - last_chunk_time > CHUNK_TIMEOUT:
-                            app.logger.warning(f"Stream heartbeat timeout: {stream_url}")
-                            break
-        except Timeout:
-            app.logger.warning(f"Stream timeout reached: {stream_url}")
+            with session.get(stream_url, headers=headers, stream=True, timeout=(5,15)) as r:
+                for chunk in r.iter_content(STREAM_CHUNK_SIZE):
+                    if chunk:
+                        yield chunk
         except Exception as e:
             app.logger.warning(f"Stream broken: {stream_url} ({e})")
             return
-
     return Response(
         generate(),
         content_type="video/mp2t",
@@ -226,16 +214,17 @@ def play():
         return "No MACs for portal", 503
 
     client_id = get_client_id()
+    session = requests.Session()  # ใช้ session ต่อ client
 
     # 1️⃣ ใช้ MAC เดิม
     mac = get_saved_mac(client_id, portal)
     if mac and mac in macs:
         try:
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r_test = global_session.get(stream, headers=headers, stream=True, timeout=(5,5))
+            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,15))
             if r_test.status_code == 200:
                 save_mac(client_id, portal, mac)
-                return stream_response(stream, mac)
+                return stream_response(session, stream, mac)
         except:
             pass
 
@@ -248,10 +237,10 @@ def play():
         tried_macs.add(mac)
         try:
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r_test = global_session.get(stream, headers=headers, stream=True, timeout=(5,5))
+            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,15))
             if r_test.status_code == 200:
                 save_mac(client_id, portal, mac)
-                return stream_response(stream, mac)
+                return stream_response(session, stream, mac)
         except:
             continue
 
