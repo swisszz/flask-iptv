@@ -4,6 +4,7 @@ monkey.patch_all()
 from flask import Flask, Response, request
 import requests, json, time, random, re
 from urllib.parse import quote_plus, urlparse
+from requests.adapters import HTTPAdapter
 
 app = Flask(__name__)
 
@@ -21,7 +22,12 @@ STREAM_TIMEOUT = 60  # ถ้าไม่มี chunk ใหม่ 60 วิน�
 # --------------------------
 client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen": timestamp}
 channel_cache = {}    # portal -> (timestamp, mac, channels)
-global_session = requests.Session()  # reuse connection
+
+# ใช้ global session + connection pool
+global_session = requests.Session()
+adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
+global_session.mount("http://", adapter)
+global_session.mount("https://", adapter)
 
 # --------------------------
 # Utils
@@ -156,12 +162,14 @@ def stream_response(session, stream, mac):
     
     def generate():
         try:
-            # เพิ่ม Timeout รอบ generator → worker ไม่ค้าง
+            # ใช้ gevent.Timeout รอบ generator → worker ไม่ค้าง
             with Timeout(STREAM_TIMEOUT, False):
                 with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
                     for chunk in r.iter_content(16*1024):
                         if chunk:
                             yield chunk
+        except Timeout:
+            app.logger.warning(f"Stream timeout for {stream}")
         except Exception as e:
             app.logger.warning(f"Stream broken: {e}")
             return
