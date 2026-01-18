@@ -13,9 +13,11 @@ app = Flask(__name__)
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-SESSION_TTL = 3600  # 1 ชั่วโมง
-CHANNEL_CACHE_TTL = 600  # 10 นาที
-STREAM_TIMEOUT = 60  # ถ้าไม่มี chunk ใหม่ 60 วินาที → stop generator
+SESSION_TTL = 3600          # 1 ชั่วโมง
+CHANNEL_CACHE_TTL = 600     # 10 นาที
+STREAM_CHUNK_SIZE = 16*1024
+CHUNK_TIMEOUT = 10          # ถ้าไม่มี chunk ใหม่เกิน 10 วินาที → stop generator
+STREAM_TIMEOUT = 3600       # ดูได้สูงสุด 1 ชั่วโมง
 
 # --------------------------
 # Global state
@@ -23,7 +25,9 @@ STREAM_TIMEOUT = 60  # ถ้าไม่มี chunk ใหม่ 60 วิน�
 client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen": timestamp}
 channel_cache = {}    # portal -> (timestamp, mac, channels)
 
-# ใช้ global session + connection pool
+# --------------------------
+# Global session + connection pool
+# --------------------------
 global_session = requests.Session()
 adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
 global_session.mount("http://", adapter)
@@ -155,25 +159,29 @@ def get_channels(portal, macs):
     return None, []
 
 # --------------------------
-# Streaming helpers
+# Streaming helper (ลื่นไหลนาน)
 # --------------------------
-def stream_response(session, stream, mac):
-    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-    
+def stream_response(stream_url, mac):
+    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
+
     def generate():
+        last_chunk_time = time.time()
         try:
-            # ใช้ gevent.Timeout รอบ generator → worker ไม่ค้าง
-            with Timeout(STREAM_TIMEOUT, False):
-                with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
-                    for chunk in r.iter_content(16*1024):
+            with Timeout(STREAM_TIMEOUT, True):  # generator timeout สูงสุด
+                with global_session.get(stream_url, headers=headers, stream=True, timeout=(5,10)) as r:
+                    for chunk in r.iter_content(STREAM_CHUNK_SIZE):
                         if chunk:
+                            last_chunk_time = time.time()
                             yield chunk
+                        elif time.time() - last_chunk_time > CHUNK_TIMEOUT:
+                            app.logger.warning(f"Stream heartbeat timeout: {stream_url}")
+                            break
         except Timeout:
-            app.logger.warning(f"Stream timeout for {stream}")
+            app.logger.warning(f"Stream timeout reached: {stream_url}")
         except Exception as e:
-            app.logger.warning(f"Stream broken: {e}")
+            app.logger.warning(f"Stream broken: {stream_url} ({e})")
             return
-    
+
     return Response(
         generate(),
         content_type="video/mp2t",
@@ -218,21 +226,20 @@ def play():
         return "No MACs for portal", 503
 
     client_id = get_client_id()
-    session = global_session  # reuse connection
 
-    # 1️⃣ MAC เดิม
+    # 1️⃣ ใช้ MAC เดิม
     mac = get_saved_mac(client_id, portal)
     if mac and mac in macs:
         try:
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
+            r_test = global_session.get(stream, headers=headers, stream=True, timeout=(5,5))
             if r_test.status_code == 200:
                 save_mac(client_id, portal, mac)
-                return stream_response(session, stream, mac)
-        except Exception as e:
-            app.logger.warning(f"Saved MAC failed: {e}")
+                return stream_response(stream, mac)
+        except:
+            pass
 
-    # 2️⃣ Random MAC ใหม่
+    # 2️⃣ ลอง MAC ใหม่
     tried_macs = set()
     while len(tried_macs) < len(macs):
         mac = pick_mac(macs, tried_macs)
@@ -241,12 +248,11 @@ def play():
         tried_macs.add(mac)
         try:
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
+            r_test = global_session.get(stream, headers=headers, stream=True, timeout=(5,5))
             if r_test.status_code == 200:
                 save_mac(client_id, portal, mac)
-                return stream_response(session, stream, mac)
-        except Exception as e:
-            app.logger.warning(f"MAC {mac} failed: {e}")
+                return stream_response(stream, mac)
+        except:
             continue
 
     return "All MACs failed", 503
