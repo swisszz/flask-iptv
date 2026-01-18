@@ -1,4 +1,4 @@
-from gevent import monkey
+from gevent import monkey, Timeout
 monkey.patch_all()
 
 from flask import Flask, Response, request
@@ -13,14 +13,15 @@ app = Flask(__name__)
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
 SESSION_TTL = 3600  # 1 ชั่วโมง
-       
-CHANNEL_CACHE_TTL = 600    # 10 นาที
+CHANNEL_CACHE_TTL = 600  # 10 นาที
+STREAM_TIMEOUT = 60  # ถ้าไม่มี chunk ใหม่ 60 วินาที → stop generator
 
 # --------------------------
 # Global state
 # --------------------------
 client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen": timestamp}
 channel_cache = {}    # portal -> (timestamp, mac, channels)
+global_session = requests.Session()  # reuse connection
 
 # --------------------------
 # Utils
@@ -114,12 +115,11 @@ def get_channels(portal, macs):
         ts, cached_mac, channels = channel_cache[portal]
         if now - ts < CHANNEL_CACHE_TTL:
             return cached_mac, channels
-    # ถ้า cache หมดอายุ → fetch ใหม่
     random.shuffle(macs)
     for mac in macs:
         try:
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            r = requests.get(
+            r = global_session.get(
                 f"{portal.rstrip('/')}/server/load.php",
                 params={"type":"itv","action":"get_all_channels"},
                 headers=headers,
@@ -152,16 +152,20 @@ def get_channels(portal, macs):
 # Streaming helpers
 # --------------------------
 def stream_response(session, stream, mac):
-    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
+    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
+    
     def generate():
         try:
-            with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
-                for chunk in r.iter_content(16384):
-                    if chunk:
-                        yield chunk
+            # เพิ่ม Timeout รอบ generator → worker ไม่ค้าง
+            with Timeout(STREAM_TIMEOUT, False):
+                with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
+                    for chunk in r.iter_content(16*1024):
+                        if chunk:
+                            yield chunk
         except Exception as e:
             app.logger.warning(f"Stream broken: {e}")
             return
+    
     return Response(
         generate(),
         content_type="video/mp2t",
@@ -206,7 +210,7 @@ def play():
         return "No MACs for portal", 503
 
     client_id = get_client_id()
-    session = requests.Session()
+    session = global_session  # reuse connection
 
     # 1️⃣ MAC เดิม
     mac = get_saved_mac(client_id, portal)
@@ -217,8 +221,8 @@ def play():
             if r_test.status_code == 200:
                 save_mac(client_id, portal, mac)
                 return stream_response(session, stream, mac)
-        except:
-            pass
+        except Exception as e:
+            app.logger.warning(f"Saved MAC failed: {e}")
 
     # 2️⃣ Random MAC ใหม่
     tried_macs = set()
@@ -233,7 +237,8 @@ def play():
             if r_test.status_code == 200:
                 save_mac(client_id, portal, mac)
                 return stream_response(session, stream, mac)
-        except:
+        except Exception as e:
+            app.logger.warning(f"MAC {mac} failed: {e}")
             continue
 
     return "All MACs failed", 503
@@ -241,9 +246,3 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
-
-
-
-
-
-
