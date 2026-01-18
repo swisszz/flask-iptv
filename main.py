@@ -1,30 +1,26 @@
-from gevent import monkey, pool, Timeout, sleep
+from gevent import monkey
 monkey.patch_all()
 
-import gevent
 from flask import Flask, Response, request
-from geventhttpclient import HTTPClient, URL
-import json, time, random, re, logging
+import requests, json, time, random, re
 from urllib.parse import quote_plus, urlparse
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
 # --------------------------
 # Config
 # --------------------------
 MACLIST_FILE = "maclist.json"
 USER_AGENT = "Mozilla/5.0 (Android) IPTV/1.0"
-SESSION_TTL = 86400  # 24 ชั่วโมง
+SESSION_TTL = 3600  # 1 ชั่วโมง
+       
 CHANNEL_CACHE_TTL = 600    # 10 นาที
-MAX_CONCURRENT_REQUESTS = 10  # pool size
 
 # --------------------------
 # Global state
 # --------------------------
 client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen": timestamp}
 channel_cache = {}    # portal -> (timestamp, mac, channels)
-request_pool = pool.Pool(MAX_CONCURRENT_REQUESTS)
 
 # --------------------------
 # Utils
@@ -102,7 +98,7 @@ def save_mac(client_id, portal, mac):
     client_sessions[client_id] = {"portal": portal, "mac": mac, "last_seen": time.time()}
 
 # --------------------------
-# Portal helpers with Gevent-safe HTTP
+# Portal helpers
 # --------------------------
 def pick_mac(macs, tried_macs=None):
     if not macs:
@@ -118,67 +114,59 @@ def get_channels(portal, macs):
         ts, cached_mac, channels = channel_cache[portal]
         if now - ts < CHANNEL_CACHE_TTL:
             return cached_mac, channels
-
-    def fetch(mac):
+    # ถ้า cache หมดอายุ → fetch ใหม่
+    random.shuffle(macs)
+    for mac in macs:
         try:
-            url_obj = URL(f"{portal.rstrip('/')}/server/load.php?type=itv&action=get_all_channels")
-            client = HTTPClient(url_obj.host, url_obj.port, secure=url_obj.scheme=="https", connect_timeout=5, network_timeout=10)
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            with Timeout(12, False):
-                resp = client.get(url_obj.request_uri, headers=headers)
-                if resp.status_code != 200:
-                    return None
-                data = json.loads(resp.read().decode()).get("js", {}).get("data", [])
-                channels = []
-                if isinstance(data, dict):
-                    for v in data.values():
-                        if isinstance(v, dict):
-                            channels.append(v)
-                        elif isinstance(v, list) and len(v)>=2:
-                            channels.append({"name": v[0], "cmd": v[1]})
-                elif isinstance(data, list):
-                    for ch in data:
-                        if isinstance(ch, dict):
-                            channels.append(ch)
-                        elif isinstance(ch, list) and len(ch)>=2:
-                            channels.append({"name": ch[0], "cmd": ch[1]})
-                if channels:
-                    return mac, channels
+            r = requests.get(
+                f"{portal.rstrip('/')}/server/load.php",
+                params={"type":"itv","action":"get_all_channels"},
+                headers=headers,
+                timeout=10
+            )
+            r.raise_for_status()
+            data = r.json().get("js", {}).get("data", [])
+            channels = []
+            if isinstance(data, dict):
+                for v in data.values():
+                    if isinstance(v, dict):
+                        channels.append(v)
+                    elif isinstance(v, list) and len(v)>=2:
+                        channels.append({"name": v[0], "cmd": v[1]})
+            elif isinstance(data, list):
+                for ch in data:
+                    if isinstance(ch, dict):
+                        channels.append(ch)
+                    elif isinstance(ch, list) and len(ch)>=2:
+                        channels.append({"name": ch[0], "cmd": ch[1]})
+            if channels:
+                channel_cache[portal] = (now, mac, channels)
+                return mac, channels
         except Exception as e:
             app.logger.warning(f"MAC {mac} fetch channels failed: {e}")
-        return None
-
-    jobs = [request_pool.spawn(fetch, mac) for mac in macs]
-    gevent.joinall(jobs, timeout=15)
-    for job in jobs:
-        if job.value:
-            mac, channels = job.value
-            channel_cache[portal] = (now, mac, channels)
-            return mac, channels
+            continue
     return None, []
 
 # --------------------------
 # Streaming helpers
 # --------------------------
-def stream_response(stream_url, mac):
+def stream_response(session, stream, mac):
+    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
     def generate():
-        url_obj = URL(stream_url)
-        client = HTTPClient(url_obj.host, url_obj.port, secure=url_obj.scheme=="https", connect_timeout=5, network_timeout=30)
-        headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
         try:
-            with Timeout(60, False):
-                resp = client.get(url_obj.request_uri, headers=headers)
-                while True:
-                    chunk = resp.read(16384)
-                    if not chunk:
-                        break
-                    yield chunk
+            with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
+                for chunk in r.iter_content(16384):
+                    if chunk:
+                        yield chunk
         except Exception as e:
             app.logger.warning(f"Stream broken: {e}")
             return
-    return Response(generate(),
-                    content_type="video/mp2t",
-                    headers={"Cache-Control":"no-cache","Connection":"keep-alive","X-Accel-Buffering":"no"})
+    return Response(
+        generate(),
+        content_type="video/mp2t",
+        headers={"Cache-Control":"no-cache","Connection":"keep-alive","X-Accel-Buffering":"no"}
+    )
 
 # --------------------------
 # Routes
@@ -218,38 +206,33 @@ def play():
         return "No MACs for portal", 503
 
     client_id = get_client_id()
+    session = requests.Session()
 
     # 1️⃣ MAC เดิม
     mac = get_saved_mac(client_id, portal)
     if mac and mac in macs:
         try:
-            url_obj = URL(stream)
-            client = HTTPClient(url_obj.host, url_obj.port, secure=url_obj.scheme=="https", connect_timeout=5, network_timeout=10)
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            with Timeout(10, False):
-                resp = client.get(url_obj.request_uri, headers=headers)
-                if resp.status_code == 200:
-                    save_mac(client_id, portal, mac)
-                    return stream_response(stream, mac)
+            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
+            if r_test.status_code == 200:
+                save_mac(client_id, portal, mac)
+                return stream_response(session, stream, mac)
         except:
             pass
 
     # 2️⃣ Random MAC ใหม่
     tried_macs = set()
-    for _ in range(len(macs)):
+    while len(tried_macs) < len(macs):
         mac = pick_mac(macs, tried_macs)
         if not mac:
             break
         tried_macs.add(mac)
         try:
-            url_obj = URL(stream)
-            client = HTTPClient(url_obj.host, url_obj.port, secure=url_obj.scheme=="https", connect_timeout=5, network_timeout=10)
             headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}"}
-            with Timeout(10, False):
-                resp = client.get(url_obj.request_uri, headers=headers)
-                if resp.status_code == 200:
-                    save_mac(client_id, portal, mac)
-                    return stream_response(stream, mac)
+            r_test = session.get(stream, headers=headers, stream=True, timeout=(5,5))
+            if r_test.status_code == 200:
+                save_mac(client_id, portal, mac)
+                return stream_response(session, stream, mac)
         except:
             continue
 
@@ -258,5 +241,9 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
+
+
+
 
 
