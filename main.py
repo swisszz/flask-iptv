@@ -156,7 +156,7 @@ def stream_response(session, stream, mac):
     def generate():
         try:
             with session.get(stream, headers=headers, stream=True, timeout=(5,30)) as r:
-                for chunk in r.iter_content(4096):
+                for chunk in r.iter_content(16384):
                     if chunk:
                         yield chunk
         except Exception as e:
@@ -241,8 +241,6 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
-
-
 
 
 
