@@ -152,7 +152,7 @@ def get_channels(portal, macs):
 # Streaming helpers
 # --------------------------
 def stream_response(session, stream, mac):
-    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "keep-alive"}
+    headers = {"User-Agent": USER_AGENT, "Cookie": f"mac={mac}", "Connection": "close"}
     def generate():
         try:
             with session.get(stream, headers=headers, stream=True, timeout=(5,None)) as r:
@@ -241,6 +241,7 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 
 
