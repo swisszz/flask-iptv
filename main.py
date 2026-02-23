@@ -17,7 +17,7 @@ SESSION_TTL = 3600  # 1 ชั่วโมง
 CHANNEL_CACHE_TTL = 600    # 10 นาที
 
 #http://swisszziptv.atwebpages.com/ --------------------------
-# Global state
+# http://eloy.sportsontheweb.net/😄
 # --------------------------
 client_sessions = {}  # client_id -> {"portal": portal, "mac": mac, "last_seen": timestamp}
 channel_cache = {}    # portal -> (timestamp, mac, channels)
@@ -241,6 +241,7 @@ def play():
 @app.route("/")
 def home():
     return "Live TV Proxy running"
+
 
 
 
